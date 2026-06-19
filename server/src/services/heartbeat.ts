@@ -1423,6 +1423,41 @@ export type ResolvedWorkspaceForRun = {
   warnings: string[];
 };
 
+export async function resolveConfiguredFallbackWorkspaceCwd(input: {
+  configuredCwd: string | null | undefined;
+  fallbackCwd: string;
+}): Promise<{ cwd: string; warnings: string[] }> {
+  const configuredCwd = readNonEmptyString(input.configuredCwd);
+  if (!configuredCwd) {
+    return { cwd: input.fallbackCwd, warnings: [] };
+  }
+
+  if (!path.isAbsolute(configuredCwd)) {
+    return {
+      cwd: input.fallbackCwd,
+      warnings: [
+        `Configured fallback workspace "${configuredCwd}" is not absolute. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+      ],
+    };
+  }
+
+  const configuredCwdExists = await fs
+    .stat(configuredCwd)
+    .then((stats) => stats.isDirectory())
+    .catch(() => false);
+
+  if (configuredCwdExists) {
+    return { cwd: configuredCwd, warnings: [] };
+  }
+
+  return {
+    cwd: input.fallbackCwd,
+    warnings: [
+      `Configured fallback workspace "${configuredCwd}" is not available. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+    ],
+  };
+}
+
 type ProjectWorkspaceCandidate = {
   id: string;
 };
@@ -4197,7 +4232,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; configuredFallbackCwd?: string | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -4299,9 +4334,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      const defaultFallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      const fallbackWorkspace = await resolveConfiguredFallbackWorkspaceCwd({
+        configuredCwd: opts?.configuredFallbackCwd,
+        fallbackCwd: defaultFallbackCwd,
+      });
+      const fallbackCwd = fallbackWorkspace.cwd;
       await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
+      warnings.push(...fallbackWorkspace.warnings);
       if (preferredWorkspaceWarning) {
         warnings.push(preferredWorkspaceWarning);
       }
@@ -4369,9 +4410,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    const defaultFallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    const fallbackWorkspace = await resolveConfiguredFallbackWorkspaceCwd({
+      configuredCwd: opts?.configuredFallbackCwd,
+      fallbackCwd: defaultFallbackCwd,
+    });
+    const cwd = fallbackWorkspace.cwd;
     await fs.mkdir(cwd, { recursive: true });
-    const warnings: string[] = [];
+    const warnings: string[] = [...fallbackWorkspace.warnings];
     if (sessionCwd && sessionCwdLooksUnsafe) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted. Using fallback workspace "${cwd}" for this run.`,
@@ -7831,6 +7877,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       trustPreset.kind === "low_trust_review" && resolvedExecutionWorkspaceMode === "shared_workspace"
         ? "isolated_workspace"
         : resolvedExecutionWorkspaceMode;
+    const configuredFallbackCwd =
+      readNonEmptyString(issueAssigneeOverrides?.adapterConfig?.cwd) ??
+      readNonEmptyString(config.cwd);
+    let resolvedWorkspace = await resolveWorkspaceForRun(
+      agent,
+      context,
+      previousSessionParams,
+      {
+        useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+        configuredFallbackCwd,
+      },
+    );
     const issueRef = issueContext
       ? {
           id: issueContext.id,
@@ -7988,7 +8046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const selectedEnvironmentId = environmentResolution.environmentId;
     const {
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
-      workspace: resolvedWorkspace,
+      workspace: lowTrustPreflightWorkspace,
     } = await resolveWorkspaceAfterLowTrustPreflight({
       db,
       trustPreset,
@@ -8014,9 +8072,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agent,
           context,
           previousSessionParams,
-          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+          {
+            useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+            configuredFallbackCwd,
+          },
         ),
     });
+    resolvedWorkspace = lowTrustPreflightWorkspace;
     const workspaceManagedConfig = shouldReuseExisting
       ? { ...config }
       : buildExecutionWorkspaceAdapterConfig({

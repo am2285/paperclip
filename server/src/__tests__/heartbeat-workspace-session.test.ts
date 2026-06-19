@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
@@ -15,6 +18,7 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveConfiguredFallbackWorkspaceCwd,
   resolveNextSessionState,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
@@ -610,6 +614,60 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("resolveConfiguredFallbackWorkspaceCwd", () => {
+  it("uses an existing absolute configured cwd before the agent home fallback", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-configured-fallback-"));
+
+    try {
+      const configured = path.join(root, "repo");
+      await fs.mkdir(configured);
+
+      await expect(resolveConfiguredFallbackWorkspaceCwd({
+        configuredCwd: configured,
+        fallbackCwd: path.join(root, "agent-home"),
+      })).resolves.toEqual({
+        cwd: configured,
+        warnings: [],
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back with a warning when configured cwd is relative", async () => {
+    await expect(resolveConfiguredFallbackWorkspaceCwd({
+      configuredCwd: "relative-workspace",
+      fallbackCwd: "/tmp/agent-home",
+    })).resolves.toEqual({
+      cwd: "/tmp/agent-home",
+      warnings: [
+        'Configured fallback workspace "relative-workspace" is not absolute. Using fallback workspace "/tmp/agent-home" for this run.',
+      ],
+    });
+  });
+
+  it("falls back with a warning when configured cwd is missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-configured-fallback-missing-"));
+
+    try {
+      const fallback = path.join(root, "agent-home");
+      const missing = path.join(root, "missing");
+
+      await expect(resolveConfiguredFallbackWorkspaceCwd({
+        configuredCwd: missing,
+        fallbackCwd: fallback,
+      })).resolves.toEqual({
+        cwd: fallback,
+        warnings: [
+          `Configured fallback workspace "${missing}" is not available. Using fallback workspace "${fallback}" for this run.`,
+        ],
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 
