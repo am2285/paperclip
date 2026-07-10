@@ -1947,6 +1947,57 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("another company");
   });
 
+  it("allows manager-chain issue mutation for subordinate assigned issues only", async () => {
+    const company = await createCompany(db, "ManagerIssueMutation");
+    const managerAgent = await createAgent(db, company.id, { role: "cto" });
+    const subordinateAgent = await createAgent(db, company.id, {
+      role: "release-engineer",
+      reportsTo: managerAgent.id,
+    });
+    const peerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const subordinateIssue = await createIssue(db, company.id, {
+      assigneeAgentId: subordinateAgent.id,
+    });
+
+    const managerDecision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: managerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: subordinateIssue.id,
+        projectId: subordinateIssue.projectId,
+        parentIssueId: subordinateIssue.parentId,
+        assigneeAgentId: subordinateIssue.assigneeAgentId,
+        assigneeUserId: subordinateIssue.assigneeUserId,
+        status: subordinateIssue.status,
+      },
+    });
+    const peerDecision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: peerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: subordinateIssue.id,
+        projectId: subordinateIssue.projectId,
+        parentIssueId: subordinateIssue.parentId,
+        assigneeAgentId: subordinateIssue.assigneeAgentId,
+        assigneeUserId: subordinateIssue.assigneeUserId,
+        status: subordinateIssue.status,
+      },
+    });
+
+    expect(managerDecision).toMatchObject({
+      allowed: true,
+      reason: "allow_manager_chain",
+    });
+    expect(peerDecision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");
