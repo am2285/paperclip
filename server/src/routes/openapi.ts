@@ -14,6 +14,11 @@ import {
   builtInAgentProvisionSchema,
   generateSummarySlotSchema,
   writeSummarySlotSchema,
+  createStatusCardSchema,
+  patchStatusCardSchema,
+  refreshStatusCardSchema,
+  writeStatusCardQuerySchema,
+  writeStatusCardSummarySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -150,6 +155,7 @@ import {
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
   // Document annotations
   createDocumentAnnotationCommentSchema,
@@ -159,6 +165,7 @@ import {
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
@@ -728,6 +735,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/bootstrap/claim",
   "GET /api/companies/{companyId}/resource-memberships/me",
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
+  "PUT /api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
   "GET /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/secret-provider-configs",
@@ -1434,6 +1442,67 @@ registry.registerPath({
     409: r.conflict,
     422: r.unprocessable,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "List status cards",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "Create a status card",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(createStatusCardSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+for (const route of [
+  ["get", "/api/status-cards/{id}", "Get a status card"],
+  ["delete", "/api/status-cards/{id}", "Delete a status card"],
+  ["post", "/api/status-cards/{id}/recompile", "Recompile a status card query"],
+  ["get", "/api/status-cards/{id}/dry-run", "Execute stored status card queries without an LLM"],
+  ["get", "/api/status-cards/{id}/updates", "List status card updates"],
+  ["get", "/api/status-cards/{id}/summary-revisions", "List status card summary revisions"],
+] as const) {
+  registerCurrentRoute({ method: route[0], path: route[1], tags: ["status-cards"], summary: route[2] });
+}
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/status-cards/{id}",
+  tags: ["status-cards"],
+  summary: "Update, archive, or restore a status card",
+  body: patchStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/status-cards/{id}/refresh",
+  tags: ["status-cards"],
+  summary: "Refresh a status card",
+  body: refreshStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/query",
+  tags: ["status-cards"],
+  summary: "Write a compiled status card query",
+  body: writeStatusCardQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/summary",
+  tags: ["status-cards"],
+  summary: "Write a generated status card summary",
+  body: writeStatusCardSummarySchema,
 });
 
 registry.registerPath({
@@ -5472,6 +5541,14 @@ registerCurrentRoute({
   summary: "Get issue cost summary",
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
+  tags: ["resource-memberships"],
+  summary: "Star or unstar a document resource",
+  body: updateDocumentResourceMembershipSchema,
+});
+
 for (const route of [
   ["get", "/api/companies/{companyId}/resource-memberships/me", "List current user's resource memberships"],
   ["put", "/api/companies/{companyId}/resource-memberships/me/agents/{agentId}", "Join or leave an agent resource"],
@@ -5841,6 +5918,14 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Cancel an issue question interaction",
   body: cancelIssueThreadInteractionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
+  tags: ["issues"],
+  summary: "Withdraw a pending issue thread interaction",
+  body: withdrawIssueThreadInteractionSchema,
 });
 
 for (const route of [

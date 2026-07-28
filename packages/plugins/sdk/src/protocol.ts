@@ -28,8 +28,10 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueAssigneeAdapterOverrides,
+  IssueAttachment,
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
+  Approval,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
@@ -55,6 +57,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
   PluginIssueSubtree,
+  PluginIssueAttachmentContent,
   PluginIssueWakeupBatchResult,
   PluginIssueWakeupResult,
   PluginJobContext,
@@ -254,6 +257,14 @@ export const PLUGIN_RPC_ERROR_CODES = {
   METHOD_NOT_IMPLEMENTED: -32004,
   /** The worker→host call attempted to escape the current invocation company scope. */
   INVOCATION_SCOPE_DENIED: -32005,
+  /**
+   * A `configChanged` delivery would have collapsed a single-tenant worker onto
+   * a second, distinct company's configuration. The worker fails closed instead
+   * of silently overwriting the already-applied tenant's config. A plugin that
+   * genuinely serves multiple companies from one worker must opt in via
+   * `multiCompanyConfig: true` on its definition.
+   */
+  CROSS_TENANT_CONFIG: -32006,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;
@@ -602,6 +613,7 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    * per-run sandbox should use this to select the runtime image and per-run env.
    */
   adapterType?: string;
+  executionWorkspaceSettings?: Record<string, unknown> | null;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -639,6 +651,8 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /** Skip login-shell profile sourcing when the command already resolves on the sandbox default PATH. */
+  noProfile?: boolean;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -682,6 +696,41 @@ export interface PluginSyncFileMapping {
 }
 
 /**
+ * A single control command run against the sandbox after a sync operation's
+ * files have landed. Ordered within {@link PluginSyncOperation.postUploadCommands}
+ * and executed in array order, fail-fast (the first non-zero exit or timeout
+ * aborts the operation).
+ *
+ * SECURITY — command origin (Stage-1 design review, condition C1). `command` is
+ * a **Paperclip/adapter-authored control operation**: it may be supplied ONLY by
+ * core/adapter code. No server route, issue/comment content, project/workspace
+ * file content, provider-plugin callback, or arbitrary adapter config may supply
+ * a raw `command` string, and any path embedded in it MUST be built by
+ * adapter/core helpers from already-confined paths and shell-quoted (C3). A
+ * provider MUST treat the command as **opaque**: it may execute or reject it, but
+ * MUST NOT rewrite, concatenate, or append provider-decided shell fragments to
+ * it.
+ */
+export interface PluginPostUploadCommand {
+  /**
+   * The opaque, adapter-authored shell command to run after upload. Executed
+   * verbatim by the provider (never rewritten/concatenated). See the security
+   * note above.
+   */
+  command: string;
+  /**
+   * Working directory for the command. When present, MUST be an absolute POSIX
+   * path confined under the operation's allowed sandbox target root (condition
+   * C2); providers re-validate it before exec. When absent, the provider
+   * defaults to the resolved sync remote/runtime root — never a process default
+   * cwd.
+   */
+  cwd?: string;
+  /** Optional per-command timeout in milliseconds. */
+  timeoutMs?: number;
+}
+
+/**
  * An ordered, opaque unit of work handed to a sync hook. The `operationId` is an
  * opaque, non-sensitive token authored by the orchestrator; a provider MUST NOT
  * interpret it. Operations are applied in array order.
@@ -689,6 +738,13 @@ export interface PluginSyncFileMapping {
 export interface PluginSyncOperation {
   operationId: string;
   files: PluginSyncFileMapping[];
+  /**
+   * Optional ordered control commands run after this operation's files land, in
+   * array order, fail-fast. Absent means "no commands" — byte-identical to a
+   * pre-contract operation. See {@link PluginPostUploadCommand} for the command
+   * origin/confinement security contract (C1–C4).
+   */
+  postUploadCommands?: PluginPostUploadCommand[];
 }
 
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
@@ -1468,6 +1524,34 @@ export interface WorkerToHostMethods {
     },
     result: IssueThreadInteraction,
   ];
+  "issues.listInteractions": [
+    params: { issueId: string; companyId: string },
+    result: IssueThreadInteraction[],
+  ];
+  "issues.respondInteraction": [
+    params: {
+      issueId: string;
+      interactionId: string;
+      companyId: string;
+      action: "accept" | "reject";
+      /**
+       * Active human company member the decision is attributed to. Required —
+       * resolving an interaction is a board-user action; the host re-verifies
+       * active membership at apply time and never trusts this value blindly.
+       */
+      actorUserId?: string;
+      reason?: string | null;
+    },
+    result: { interaction: IssueThreadInteraction; applied: boolean },
+  ];
+  "issues.listAttachments": [
+    params: { issueId: string; companyId: string },
+    result: IssueAttachment[],
+  ];
+  "issues.getAttachmentContent": [
+    params: { attachmentId: string; companyId: string; maxBytes?: number | null },
+    result: PluginIssueAttachmentContent | null,
+  ];
 
   // Issue Documents
   "issues.documents.list": [
@@ -1493,6 +1577,31 @@ export interface WorkerToHostMethods {
   "issues.documents.delete": [
     params: { issueId: string; key: string; companyId: string },
     result: void,
+  ];
+
+  // Approvals
+  "approvals.list": [
+    params: { companyId: string; status?: string | null },
+    result: Approval[],
+  ];
+  "approvals.get": [
+    params: { approvalId: string; companyId: string },
+    result: Approval | null,
+  ];
+  "approvals.decide": [
+    params: {
+      approvalId: string;
+      companyId: string;
+      action: "approve" | "reject";
+      /**
+       * Active human company member the decision is attributed to. Required —
+       * deciding an approval is a board-user action; the host re-verifies
+       * active membership at apply time and never trusts this value blindly.
+       */
+      actorUserId?: string;
+      decisionNote?: string | null;
+    },
+    result: { approval: Approval; applied: boolean },
   ];
 
   // Agents (read)
