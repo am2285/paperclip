@@ -1105,7 +1105,7 @@ export function authorizationService(db: Db) {
 
     const parentProject = parent?.projectId ? await loadProject(parent.projectId) : null;
     if (parent?.projectId && (!parentProject || parentProject.companyId !== resource.companyId)) return false;
-    if (hasProject && parent?.projectId && parent.projectId !== resource.projectId) return false;
+    if (hasProject && hasParent && parent?.projectId !== resource.projectId) return false;
 
     const parentWithinParentBoundary = hasParent
       ? await parentIssueMatchesTaskBridgeBoundary(

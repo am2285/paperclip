@@ -79,7 +79,12 @@ describeEmbeddedPostgres("agent API-key scope reference validation", () => {
       ])
       .returning();
 
-    const [parentIssue, conflictingParentIssue, otherIssue] = await db
+    const [
+      parentIssue,
+      conflictingParentIssue,
+      unassignedParentIssue,
+      otherIssue,
+    ] = await db
       .insert(issues)
       .values([
         { companyId, projectId: project.id, title: "Bridge root" },
@@ -87,6 +92,11 @@ describeEmbeddedPostgres("agent API-key scope reference validation", () => {
           companyId,
           projectId: conflictingProject.id,
           title: "Conflicting root",
+        },
+        {
+          companyId,
+          projectId: null,
+          title: "Unassigned root",
         },
         {
           companyId: otherCompanyId,
@@ -126,6 +136,21 @@ describeEmbeddedPostgres("agent API-key scope reference validation", () => {
         code: "agent_api_key_scope_conflicting_boundaries",
         projectIds: [project.id],
         parentIssueIds: [conflictingParentIssue.id],
+      },
+    });
+
+    await expect(
+      service.createApiKey(bridgeAgent.id, "unassigned parent boundary", {
+        kind: "task_bridge",
+        projectIds: [project.id],
+        parentIssueIds: [parentIssue.id, unassignedParentIssue.id],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "agent_api_key_scope_conflicting_boundaries",
+        projectIds: [project.id],
+        parentIssueIds: [unassignedParentIssue.id],
       },
     });
 

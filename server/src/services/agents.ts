@@ -136,9 +136,7 @@ async function validateAgentApiKeyScopeReferences(
       const allowedProjectIds = new Set(projectIds);
       const conflictingParentIssueIds = parentIssueIds.filter((id) => {
         const parentProjectId = validRowsById.get(id)?.projectId;
-        return parentProjectId !== null
-          && parentProjectId !== undefined
-          && !allowedProjectIds.has(parentProjectId);
+        return !parentProjectId || !allowedProjectIds.has(parentProjectId);
       });
       if (conflictingParentIssueIds.length > 0) {
         throw unprocessable(

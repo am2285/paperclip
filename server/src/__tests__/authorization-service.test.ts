@@ -1866,6 +1866,7 @@ describeEmbeddedPostgres("authorization service", () => {
     const outsideParent = await createIssue(db, company.id, {
       projectId: outsideProject.id,
     });
+    const unassignedParent = await createIssue(db, company.id);
     const keyId = randomUUID();
     const actor = {
       type: "agent" as const,
@@ -1917,6 +1918,32 @@ describeEmbeddedPostgres("authorization service", () => {
         assigneeAgentId: targetAgent.id,
       },
     })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+
+    const unassignedParentActor = {
+      ...actor,
+      keyScope: {
+        kind: "task_bridge" as const,
+        projectId: allowedProject.id,
+        parentIssueId: unassignedParent.id,
+        allowedAssigneeAgentIds: [targetAgent.id],
+      },
+    };
+    for (const projectId of [allowedProject.id, outsideProject.id]) {
+      await expect(authz.decide({
+        actor: unassignedParentActor,
+        action: "tasks:assign",
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          projectId,
+          parentIssueId: unassignedParent.id,
+          assigneeAgentId: targetAgent.id,
+        },
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_scope",
+      });
+    }
 
     const foreignProjectActor = {
       ...actor,
