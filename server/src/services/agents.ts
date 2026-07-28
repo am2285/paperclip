@@ -15,6 +15,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  projects,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -41,6 +42,122 @@ function hashToken(token: string) {
 
 function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
+}
+
+function uniqueScopeIds(...ids: Array<string | null | undefined>) {
+  return [...new Set(ids.filter((id): id is string => Boolean(id)))];
+}
+
+async function validateAgentApiKeyScopeReferences(
+  db: Db,
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId">,
+  scope: AgentApiKeyScope,
+) {
+  if (scope.kind === "standard") return;
+
+  if (scope.kind === "skill_test") {
+    const issue = await db
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, scope.issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.companyId !== agent.companyId) {
+      throw unprocessable(
+        "Skill-test key scope issue must belong to the agent company",
+        {
+          code: "agent_api_key_scope_invalid_issue",
+          issueId: scope.issueId,
+        },
+      );
+    }
+    return;
+  }
+
+  const projectIds = uniqueScopeIds(scope.projectId, ...(scope.projectIds ?? []));
+  const parentIssueIds = uniqueScopeIds(
+    scope.parentIssueId,
+    ...(scope.parentIssueIds ?? []),
+  );
+  if (projectIds.length === 0 && parentIssueIds.length === 0) {
+    throw unprocessable(
+      "Task bridge key scope requires at least one project or parent issue boundary",
+      { code: "agent_api_key_scope_missing_boundary" },
+    );
+  }
+
+  if (projectIds.length > 0) {
+    const rows = await db
+      .select({ id: projects.id, companyId: projects.companyId })
+      .from(projects)
+      .where(inArray(projects.id, projectIds));
+    const validIds = new Set(
+      rows
+        .filter((row) => row.companyId === agent.companyId)
+        .map((row) => row.id),
+    );
+    const invalidIds = projectIds.filter((id) => !validIds.has(id));
+    if (invalidIds.length > 0) {
+      throw unprocessable(
+        "Task bridge key scope projects must belong to the agent company",
+        {
+          code: "agent_api_key_scope_invalid_projects",
+          projectIds: invalidIds,
+        },
+      );
+    }
+  }
+
+  if (parentIssueIds.length > 0) {
+    const rows = await db
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(inArray(issues.id, parentIssueIds));
+    const validIds = new Set(
+      rows
+        .filter((row) => row.companyId === agent.companyId)
+        .map((row) => row.id),
+    );
+    const invalidIds = parentIssueIds.filter((id) => !validIds.has(id));
+    if (invalidIds.length > 0) {
+      throw unprocessable(
+        "Task bridge key scope parent issues must belong to the agent company",
+        {
+          code: "agent_api_key_scope_invalid_parent_issues",
+          parentIssueIds: invalidIds,
+        },
+      );
+    }
+  }
+
+  const allowedAssigneeAgentIds = uniqueScopeIds(
+    ...(scope.allowedAssigneeAgentIds ?? []),
+  );
+  if (allowedAssigneeAgentIds.length > 0) {
+    const rows = await db
+      .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+      .from(agents)
+      .where(inArray(agents.id, allowedAssigneeAgentIds));
+    const validIds = new Set(
+      rows
+        .filter(
+          (row) =>
+            row.companyId === agent.companyId &&
+            row.status !== "pending_approval" &&
+            row.status !== "terminated",
+        )
+        .map((row) => row.id),
+    );
+    const invalidIds = allowedAssigneeAgentIds.filter((id) => !validIds.has(id));
+    if (invalidIds.length > 0) {
+      throw unprocessable(
+        "Task bridge key scope assignees must be active agents in the agent company",
+        {
+          code: "agent_api_key_scope_invalid_assignees",
+          agentIds: invalidIds,
+        },
+      );
+    }
+  }
 }
 
 const CONFIG_REVISION_FIELDS = [
@@ -893,6 +1010,8 @@ export function agentService(db: Db) {
       if (existing.status === "terminated") {
         throw conflict("Cannot create keys for terminated agents");
       }
+
+      await validateAgentApiKeyScopeReferences(db, existing, scope);
 
       const token = createToken();
       const keyHash = hashToken(token);
