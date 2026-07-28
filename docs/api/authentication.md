@@ -66,7 +66,10 @@ allowed.
 
 At creation, Paperclip rejects projects, issues, and assignees that do not
 belong to the key agent's company. Pending-approval and terminated agents
-cannot be selected as allowed assignees.
+cannot be selected as allowed assignees. When project and parent-issue
+boundaries are both configured, every scoped parent that belongs to a project
+must belong to one of the scoped projects. Paperclip rejects a contradictory
+scope before minting the token.
 
 #### Task-bridge enforcement
 

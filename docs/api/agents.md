@@ -143,7 +143,9 @@ bounded task-bridge scope:
 At least one project or parent issue is required. Plural `projectIds` and
 `parentIssueIds` arrays are supported up to 50 entries, as is
 `allowedAssigneeAgentIds`. All references are validated against the agent's
-company before the key is created.
+company before the key is created. If project and parent boundaries are both
+present, every scoped parent with a project must belong to one of the scoped
+projects; contradictory boundary sets are rejected before a token is minted.
 
 The response includes key metadata, its normalized `scope`, and the plaintext
 token. Store the token securely: the full value is shown only once. List-key

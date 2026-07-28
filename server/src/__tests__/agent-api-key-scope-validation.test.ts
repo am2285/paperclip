@@ -70,18 +70,24 @@ describeEmbeddedPostgres("agent API-key scope reference validation", () => {
       ])
       .returning();
 
-    const [project, otherProject] = await db
+    const [project, conflictingProject, otherProject] = await db
       .insert(projects)
       .values([
         { companyId, name: "Bridge project" },
+        { companyId, name: "Conflicting project" },
         { companyId: otherCompanyId, name: "Other project" },
       ])
       .returning();
 
-    const [parentIssue, otherIssue] = await db
+    const [parentIssue, conflictingParentIssue, otherIssue] = await db
       .insert(issues)
       .values([
         { companyId, projectId: project.id, title: "Bridge root" },
+        {
+          companyId,
+          projectId: conflictingProject.id,
+          title: "Conflicting root",
+        },
         {
           companyId: otherCompanyId,
           projectId: otherProject.id,
@@ -107,6 +113,21 @@ describeEmbeddedPostgres("agent API-key scope reference validation", () => {
       },
     });
     expect(valid.token).toMatch(/^pcp_[a-f0-9]{48}$/);
+
+    await expect(
+      service.createApiKey(bridgeAgent.id, "conflicting boundaries", {
+        kind: "task_bridge",
+        projectIds: [project.id],
+        parentIssueIds: [parentIssue.id, conflictingParentIssue.id],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "agent_api_key_scope_conflicting_boundaries",
+        projectIds: [project.id],
+        parentIssueIds: [conflictingParentIssue.id],
+      },
+    });
 
     await expect(
       service.createApiKey(bridgeAgent.id, "cross-company project", {

@@ -109,15 +109,19 @@ async function validateAgentApiKeyScopeReferences(
 
   if (parentIssueIds.length > 0) {
     const rows = await db
-      .select({ id: issues.id, companyId: issues.companyId })
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        projectId: issues.projectId,
+      })
       .from(issues)
       .where(inArray(issues.id, parentIssueIds));
-    const validIds = new Set(
+    const validRowsById = new Map(
       rows
         .filter((row) => row.companyId === agent.companyId)
-        .map((row) => row.id),
+        .map((row) => [row.id, row]),
     );
-    const invalidIds = parentIssueIds.filter((id) => !validIds.has(id));
+    const invalidIds = parentIssueIds.filter((id) => !validRowsById.has(id));
     if (invalidIds.length > 0) {
       throw unprocessable(
         "Task bridge key scope parent issues must belong to the agent company",
@@ -126,6 +130,26 @@ async function validateAgentApiKeyScopeReferences(
           parentIssueIds: invalidIds,
         },
       );
+    }
+
+    if (projectIds.length > 0) {
+      const allowedProjectIds = new Set(projectIds);
+      const conflictingParentIssueIds = parentIssueIds.filter((id) => {
+        const parentProjectId = validRowsById.get(id)?.projectId;
+        return parentProjectId !== null
+          && parentProjectId !== undefined
+          && !allowedProjectIds.has(parentProjectId);
+      });
+      if (conflictingParentIssueIds.length > 0) {
+        throw unprocessable(
+          "Task bridge key scope parent issues must belong to a scoped project",
+          {
+            code: "agent_api_key_scope_conflicting_boundaries",
+            projectIds,
+            parentIssueIds: conflictingParentIssueIds,
+          },
+        );
+      }
     }
   }
 
