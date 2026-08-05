@@ -8738,7 +8738,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
+    const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+    const priorRetryReason = readNonEmptyString(contextSnapshot.retryReason);
+    const retryReason = wakeReason === "issue_monitor_due" || priorRetryReason === "issue_continuation_needed"
       ? "issue_continuation_needed"
       : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
