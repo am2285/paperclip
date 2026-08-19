@@ -1586,6 +1586,75 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows agents with explicit issue mutation grants to patch non-active assigned issues", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate" || input.action === "company_scope:read",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:mutate"
+          ? "Allowed by explicit grant tasks:mutate."
+          : "Missing permission.",
+      ...(input.action === "issue:mutate"
+        ? {
+            grant: {
+              principalType: "agent",
+              principalId: peerAgentId,
+              permissionKey: "tasks:mutate",
+              scope: { issueIds: [issueId] },
+            },
+          }
+        : {}),
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "done", assigneeAgentId: ownerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({
+      description: "Updated projection",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ description: "Updated projection" }),
+    );
+  });
+
+  it("keeps active checkout ownership ahead of explicit issue mutation grants", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:mutate"
+          ? "Allowed by explicit grant tasks:mutate."
+          : "Missing permission.",
+      ...(input.action === "issue:mutate"
+        ? {
+            grant: {
+              principalType: "agent",
+              principalId: peerAgentId,
+              permissionKey: "tasks:mutate",
+              scope: { issueIds: [issueId] },
+            },
+          }
+        : {}),
+    }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({
+      description: "Updated projection",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
