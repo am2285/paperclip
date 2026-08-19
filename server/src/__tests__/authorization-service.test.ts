@@ -94,7 +94,7 @@ async function grantAgentPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
   agentId: string,
-  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  permissionKey: "tasks:assign" | "tasks:assign_scope" | "tasks:mutate",
   scope: Record<string, unknown> | null = null,
 ) {
   await db.insert(companyMemberships).values({
@@ -608,6 +608,68 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_manager_chain",
     });
     expect(peerDecision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("allows explicit issue mutation grants for scoped non-assignee projection writes", async () => {
+    const company = await createCompany(db, "IssueMutationGrant");
+    const ownerAgent = await createAgent(db, company.id);
+    const projectionAgent = await createAgent(db, company.id);
+    const allowedIssue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+    const deniedIssue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+    await grantAgentPermission(db, company.id, projectionAgent.id, "tasks:mutate", {
+      issueIds: [allowedIssue.id],
+    });
+
+    const allowedDecision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: projectionAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: allowedIssue.id,
+        projectId: allowedIssue.projectId,
+        parentIssueId: allowedIssue.parentId,
+        assigneeAgentId: allowedIssue.assigneeAgentId,
+        assigneeUserId: allowedIssue.assigneeUserId,
+        status: allowedIssue.status,
+      },
+      scope: {
+        issueId: allowedIssue.id,
+        projectId: allowedIssue.projectId,
+        parentIssueId: allowedIssue.parentId,
+        assigneeAgentId: allowedIssue.assigneeAgentId,
+      },
+    });
+    const deniedDecision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: projectionAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: deniedIssue.id,
+        projectId: deniedIssue.projectId,
+        parentIssueId: deniedIssue.parentId,
+        assigneeAgentId: deniedIssue.assigneeAgentId,
+        assigneeUserId: deniedIssue.assigneeUserId,
+        status: deniedIssue.status,
+      },
+      scope: {
+        issueId: deniedIssue.id,
+        projectId: deniedIssue.projectId,
+        parentIssueId: deniedIssue.parentId,
+        assigneeAgentId: deniedIssue.assigneeAgentId,
+      },
+    });
+
+    expect(allowedDecision).toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: { permissionKey: "tasks:mutate" },
+    });
+    expect(deniedDecision).toMatchObject({
       allowed: false,
       reason: "deny_missing_grant",
     });

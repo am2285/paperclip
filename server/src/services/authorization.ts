@@ -117,7 +117,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:mutate") return null;
+  if (action === "issue:mutate") return "tasks:mutate";
   return action;
 }
 
@@ -327,8 +327,30 @@ async function scopeAllows(
       : typeof requestedScope.targetAgentId === "string"
         ? requestedScope.targetAgentId
         : null;
+  const requestedIssueId = typeof requestedScope.issueId === "string" ? requestedScope.issueId : null;
+  const requestedParentIssueId = typeof requestedScope.parentIssueId === "string" ? requestedScope.parentIssueId : null;
   const requestedProjectId = typeof requestedScope.projectId === "string" ? requestedScope.projectId : null;
   let constrained = false;
+
+  const issueIds = [
+    ...scopeValuesForKeys(grantScope, ["issueId", "issueIds", "taskId", "taskIds"]),
+    ...prefixedScopeValues(grantScope, "issue:"),
+    ...prefixedScopeValues(grantScope, "task:"),
+  ];
+  if (issueIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(issueIds, requestedIssueId)) return false;
+  }
+
+  const parentIssueIds = [
+    ...scopeValuesForKeys(grantScope, ["parentIssueId", "parentIssueIds", "parentTaskId", "parentTaskIds"]),
+    ...prefixedScopeValues(grantScope, "parent_issue:"),
+    ...prefixedScopeValues(grantScope, "parent_task:"),
+  ];
+  if (parentIssueIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(parentIssueIds, requestedParentIssueId)) return false;
+  }
 
   const projectIds = [
     ...scopeValueList(grantScope.projectId),

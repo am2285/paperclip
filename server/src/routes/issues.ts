@@ -1753,6 +1753,11 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      const hasExplicitIssueMutationGrant =
+        boundaryDecision.reason === "allow_explicit_grant" && boundaryDecision.grant?.permissionKey === "tasks:mutate";
+      if (issue.status !== "in_progress" && hasExplicitIssueMutationGrant) {
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
