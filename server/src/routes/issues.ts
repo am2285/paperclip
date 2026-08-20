@@ -10006,6 +10006,17 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
+    const suppressWakeRequested = req.body.suppressWake === true;
+    if (suppressWakeRequested && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can suppress issue-comment wakeups" });
+      return;
+    }
+    if (suppressWakeRequested && (reopenRequested || resumeRequested || interruptRequested)) {
+      res.status(400).json({
+        error: "suppressWake cannot be combined with reopen, resume, or interrupt",
+      });
+      return;
+    }
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const crossIssueCommentOnlyGrant =
@@ -10032,9 +10043,11 @@ export function issueRoutes(
     if (effectiveResumeRequested !== true && effectiveReopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
-    const explicitMoveToTodoRequested = effectiveReopenRequested || effectiveResumeRequested === true;
+    const explicitMoveToTodoRequested =
+      !suppressWakeRequested &&
+      (effectiveReopenRequested || effectiveResumeRequested === true);
     const scheduledRetryForHumanComment =
-      shouldHumanCommentResumeInProgressScheduledRetry({
+      !suppressWakeRequested && shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: true,
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
@@ -10054,6 +10067,7 @@ export function issueRoutes(
       actorId: actor.actorId,
     });
     const effectiveMoveToTodoRequested =
+      !suppressWakeRequested &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         shouldImplicitlyMoveCommentedIssueToTodo({
@@ -10173,6 +10187,7 @@ export function issueRoutes(
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
     const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
     const shouldAutoApproveReviewComment =
+      !suppressWakeRequested &&
       currentIssue.status === "in_review" &&
       currentExecutionState?.status === "pending" &&
       actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
@@ -10349,6 +10364,7 @@ export function issueRoutes(
             }
           : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
+        ...(suppressWakeRequested ? { wakeSuppressed: true, auditOnly: true } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
           removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -10357,14 +10373,16 @@ export function issueRoutes(
       },
     });
 
-    const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
-      currentIssue,
-      comment,
-      {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-    );
+    const expiredInteractions = suppressWakeRequested
+      ? []
+      : await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+          currentIssue,
+          comment,
+          {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
     await logExpiredRequestConfirmations({
       issue: currentIssue,
       interactions: expiredInteractions,
@@ -10372,18 +10390,20 @@ export function issueRoutes(
       source: "issue.comment",
     });
 
-    await revalidateActiveSourceRecoveryAfterCommittedWrite({
-      issue: currentIssue,
-      trigger: "comment",
-      actor,
-      statusChanged: reopened || scheduledRetrySupersededByComment,
-      resumeRequested: resumeRequested === true,
-      reopened,
-      blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
-    });
+    if (!suppressWakeRequested) {
+      await revalidateActiveSourceRecoveryAfterCommittedWrite({
+        issue: currentIssue,
+        trigger: "comment",
+        actor,
+        statusChanged: reopened || scheduledRetrySupersededByComment,
+        resumeRequested: resumeRequested === true,
+        reopened,
+        blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
+      });
+    }
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    if (!suppressWakeRequested) void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {

@@ -398,6 +398,39 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("persists board audit comments without reopening, resolving interactions, or waking agents", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Audit: branch superseded by PAP-100.", suppressWake: true });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        details: expect.objectContaining({ wakeSuppressed: true, auditOnly: true }),
+      }),
+    );
+  });
+
+  it("rejects suppressWake from agent-authored comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Attempted no-wake comment.", suppressWake: true });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

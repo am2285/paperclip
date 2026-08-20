@@ -350,6 +350,64 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const DEFAULT_RETRY_CHAIN_MAX_AGE_SEC = 0;
+const RUNAWAY_GUARD_ERROR_PREFIX = "[runaway_guard]";
+
+export type RunawayGuardThresholds = {
+  perRunWarningTokens: number;
+  perRunHardStopTokens: number;
+  rollingWarningTokens: number;
+  rollingHardStopTokens: number;
+  rollingWarningRuns: number;
+  rollingHardStopRuns: number;
+  failureHardStopCount: number;
+};
+
+export type RunawayGuardObservation = {
+  currentRunEffectiveTokens: number;
+  rollingEffectiveTokens: number;
+  rollingRunCount: number;
+  recentFailureCount: number;
+};
+
+export function effectiveHeartbeatTokens(usageJson: unknown) {
+  const usage = parseObject(usageJson);
+  const inputTokens = Math.max(0, asNumber(usage.inputTokens, 0));
+  const cachedInputTokens = Math.max(0, asNumber(usage.cachedInputTokens, 0));
+  const outputTokens = Math.max(0, asNumber(usage.outputTokens, 0));
+  return Math.max(0, inputTokens - cachedInputTokens) + outputTokens;
+}
+
+export function evaluateRunawayGuardThresholds(
+  observation: RunawayGuardObservation,
+  thresholds: RunawayGuardThresholds,
+) {
+  const hardStopReasons: string[] = [];
+  const warningReasons: string[] = [];
+  if (observation.currentRunEffectiveTokens >= thresholds.perRunHardStopTokens) {
+    hardStopReasons.push("per_run_effective_tokens");
+  } else if (observation.currentRunEffectiveTokens >= thresholds.perRunWarningTokens) {
+    warningReasons.push("per_run_effective_tokens");
+  }
+  if (observation.rollingEffectiveTokens >= thresholds.rollingHardStopTokens) {
+    hardStopReasons.push("rolling_effective_tokens");
+  } else if (observation.rollingEffectiveTokens >= thresholds.rollingWarningTokens) {
+    warningReasons.push("rolling_effective_tokens");
+  }
+  if (observation.rollingRunCount >= thresholds.rollingHardStopRuns) {
+    hardStopReasons.push("rolling_run_count");
+  } else if (observation.rollingRunCount >= thresholds.rollingWarningRuns) {
+    warningReasons.push("rolling_run_count");
+  }
+  if (observation.recentFailureCount >= thresholds.failureHardStopCount) {
+    hardStopReasons.push("recent_timeout_or_process_loss_failures");
+  }
+  return {
+    severity: hardStopReasons.length > 0 ? "hard_stop" as const : warningReasons.length > 0 ? "warning" as const : null,
+    reasons: hardStopReasons.length > 0 ? hardStopReasons : warningReasons,
+  };
+}
+
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
@@ -7768,13 +7826,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
-  async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
+  async function handleRunLivenessContinuation(
+    run: typeof heartbeatRuns.$inferSelect,
+    sourceAgent: typeof agents.$inferSelect,
+  ) {
     const livenessState = run.livenessState as RunLivenessState | null;
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return;
+    const retryAgeBlock = retryChainAgeBlock(run, sourceAgent, context, new Date());
+    if (retryAgeBlock) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Liveness continuation suppressed because the retry chain exceeded its cumulative age limit",
+        payload: {
+          retryChainStartedAt: retryAgeBlock.startedAt.toISOString(),
+          retryChainAgeSec: retryAgeBlock.ageSec,
+          maxRetryChainAgeSec: retryAgeBlock.maxAgeSec,
+        },
+      });
+      return;
+    }
 
     const [issue, agent] = await Promise.all([
       db
@@ -8477,17 +8553,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const contextSnapshot = parseObject(run.contextSnapshot);
+    const now = new Date();
+    const retryAgeBlock = retryChainAgeBlock(run, agent, contextSnapshot, now);
+    if (retryAgeBlock) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Missing-comment retry suppressed because the retry chain exceeded its cumulative age limit",
+        payload: {
+          retryChainStartedAt: retryAgeBlock.startedAt.toISOString(),
+          retryChainAgeSec: retryAgeBlock.ageSec,
+          maxRetryChainAgeSec: retryAgeBlock.maxAgeSec,
+        },
+      });
+      return null;
+    }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
+      retryChainStartedAt: retryChainStartedAt(run, contextSnapshot).toISOString(),
       wakeReason: "missing_issue_comment",
       retryReason: "missing_issue_comment",
       missingIssueCommentForRunId: run.id,
     }, "status_only");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
-    const now = new Date();
 
     const retryRun = await db.transaction(async (tx) => {
       await tx.execute(
@@ -8737,6 +8829,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const contextSnapshot = parseObject(run.contextSnapshot);
+    const retryAgeBlock = retryChainAgeBlock(run, agent, contextSnapshot, now);
+    if (retryAgeBlock) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed because the retry chain exceeded its cumulative age limit",
+        payload: {
+          retryChainStartedAt: retryAgeBlock.startedAt.toISOString(),
+          retryChainAgeSec: retryAgeBlock.ageSec,
+          maxRetryChainAgeSec: retryAgeBlock.maxAgeSec,
+        },
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
     const priorRetryReason = readNonEmptyString(contextSnapshot.retryReason);
@@ -8748,6 +8856,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
+      retryChainStartedAt: retryChainStartedAt(run, contextSnapshot).toISOString(),
       wakeReason: "process_lost_retry",
       retryReason,
     }, "normal_model");
@@ -9671,6 +9780,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
+    const retryAgeBlock = retryChainAgeBlock(run, agent, contextSnapshot, now);
+    if (retryAgeBlock) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic retry suppressed because the retry chain exceeded its cumulative age limit",
+        payload: {
+          retryReason,
+          retryChainStartedAt: retryAgeBlock.startedAt.toISOString(),
+          retryChainAgeSec: retryAgeBlock.ageSec,
+          maxRetryChainAgeSec: retryAgeBlock.maxAgeSec,
+          scheduledRetryAttempt: nextAttempt,
+          maxAttempts,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "Automatic retry chain age limit reached",
+        errorCode: "retry_chain_age_exhausted" as const,
+        issueId,
+      };
+    }
+
     if (retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON) {
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
@@ -9759,6 +9892,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
+      retryChainStartedAt: retryChainStartedAt(run, contextSnapshot).toISOString(),
       wakeReason,
       retryReason,
       ...(shouldQuarantineWorkspaceForRetry
@@ -10498,12 +10632,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const runawayGuard = parseObject(heartbeat.runawayGuard);
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      cooldownSec: Math.max(0, asNumber(heartbeat.cooldownSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      maxRetryChainAgeSec: Math.max(
+        0,
+        asNumber(heartbeat.maxRetryChainAgeSec, DEFAULT_RETRY_CHAIN_MAX_AGE_SEC),
+      ),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??
           heartbeat.requireActionableTimerWork ??
@@ -10519,6 +10659,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           heartbeat.dailySpendCentsLimit ??
           heartbeat.dailyBudgetCents,
       ),
+      runawayGuard: {
+        enabled: asBoolean(runawayGuard.enabled, false),
+        rollingWindowSec: Math.max(60, asNumber(runawayGuard.rollingWindowSec, 60 * 60)),
+        failureWindowSec: Math.max(60, asNumber(runawayGuard.failureWindowSec, 15 * 60)),
+        thresholds: {
+          perRunWarningTokens: Math.max(1, asNumber(runawayGuard.perRunWarningTokens, 300_000)),
+          perRunHardStopTokens: Math.max(1, asNumber(runawayGuard.perRunHardStopTokens, 500_000)),
+          rollingWarningTokens: Math.max(1, asNumber(runawayGuard.rollingWarningTokens, 750_000)),
+          rollingHardStopTokens: Math.max(1, asNumber(runawayGuard.rollingHardStopTokens, 1_000_000)),
+          rollingWarningRuns: Math.max(1, Math.floor(asNumber(runawayGuard.rollingWarningRuns, 6))),
+          rollingHardStopRuns: Math.max(1, Math.floor(asNumber(runawayGuard.rollingHardStopRuns, 10))),
+          failureHardStopCount: Math.max(1, Math.floor(asNumber(runawayGuard.failureHardStopCount, 3))),
+        },
+      },
     };
   }
 
@@ -10526,6 +10680,167 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (value === null || value === undefined || value === "") return null;
     const normalized = Math.floor(asNumber(value, 0));
     return normalized >= 0 ? normalized : null;
+  }
+
+  function retryChainStartedAt(
+    run: typeof heartbeatRuns.$inferSelect,
+    contextSnapshot: Record<string, unknown>,
+  ) {
+    const persisted = readNonEmptyString(contextSnapshot.retryChainStartedAt);
+    if (persisted) {
+      const parsed = new Date(persisted);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    return new Date(run.createdAt);
+  }
+
+  function retryChainAgeBlock(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    contextSnapshot: Record<string, unknown>,
+    now: Date,
+  ) {
+    const maxAgeSec = parseHeartbeatPolicy(agent).maxRetryChainAgeSec;
+    if (maxAgeSec <= 0) return null;
+    const startedAt = retryChainStartedAt(run, contextSnapshot);
+    const ageSec = Math.max(0, Math.floor((now.getTime() - startedAt.getTime()) / 1000));
+    return ageSec >= maxAgeSec ? { startedAt, ageSec, maxAgeSec } : null;
+  }
+
+  async function evaluateAndEnforceRunawayGuard(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    const guard = parseHeartbeatPolicy(agent).runawayGuard;
+    if (!guard.enabled) return null;
+
+    const now = new Date(run.finishedAt ?? new Date());
+    const lookbackSec = Math.max(guard.rollingWindowSec, guard.failureWindowSec);
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        usageJson: heartbeatRuns.usageJson,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.agentId, run.agentId),
+        gte(heartbeatRuns.startedAt, new Date(now.getTime() - lookbackSec * 1000)),
+        notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+      ))
+      .orderBy(desc(heartbeatRuns.startedAt));
+
+    const rollingCutoff = now.getTime() - guard.rollingWindowSec * 1000;
+    const failureCutoff = now.getTime() - guard.failureWindowSec * 1000;
+    const rollingRows = rows.filter((row) => new Date(row.startedAt ?? row.createdAt).getTime() >= rollingCutoff);
+    const failureRows = rows.filter((row) => {
+      if (new Date(row.startedAt ?? row.createdAt).getTime() < failureCutoff) return false;
+      return row.status === "timed_out" || ["timeout", "process_lost", "process_detached"].includes(row.errorCode ?? "");
+    });
+    const observation: RunawayGuardObservation = {
+      currentRunEffectiveTokens: effectiveHeartbeatTokens(run.usageJson),
+      rollingEffectiveTokens: rollingRows.reduce(
+        (total, row) => total + effectiveHeartbeatTokens(row.usageJson),
+        0,
+      ),
+      rollingRunCount: rollingRows.length,
+      recentFailureCount: failureRows.length,
+    };
+    const decision = evaluateRunawayGuardThresholds(observation, guard.thresholds);
+    if (!decision.severity) return null;
+
+    const eventPayload = {
+      severity: decision.severity,
+      reasons: decision.reasons,
+      observation,
+      thresholds: guard.thresholds,
+      rollingWindowSec: guard.rollingWindowSec,
+      failureWindowSec: guard.failureWindowSec,
+    };
+    await appendRunEvent(run, await nextRunEventSeq(run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: decision.severity === "hard_stop" ? "error" : "warn",
+      message: decision.severity === "hard_stop"
+        ? "Runaway guard hard stop reached; agent automatically paused"
+        : "Runaway guard warning threshold reached",
+      payload: eventPayload,
+    });
+
+    if (decision.severity === "warning") {
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "runaway_guard",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "agent.runaway_warning",
+        entityType: "agent",
+        entityId: run.agentId,
+        details: eventPayload,
+      });
+      return decision;
+    }
+
+    const pauseReason = `${RUNAWAY_GUARD_ERROR_PREFIX} Automatic pause: ${decision.reasons.join(", ")}`;
+    const paused = await db
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: "system",
+        pausedAt: now,
+        errorReason: truncateAgentErrorReason(pauseReason),
+        updatedAt: now,
+      })
+      .where(and(
+        eq(agents.id, run.agentId),
+        notInArray(agents.status, ["paused", "terminated"]),
+      ))
+      .returning()
+      .then((updated) => updated[0] ?? null);
+
+    if (paused) {
+      await cancelActiveForAgentInternal(
+        run.agentId,
+        "Cancelled because the runaway guard automatically paused the agent",
+        "runaway_guard_hard_stop",
+      );
+      await cancelPendingWakeupsForAgentsInternal(
+        [run.agentId],
+        "Cancelled because the runaway guard automatically paused the agent",
+      );
+      publishLiveEvent({
+        companyId: paused.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: paused.id,
+          status: paused.status,
+          reason: pauseReason,
+          automatic: true,
+        },
+      });
+    }
+
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "runaway_guard",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "agent.runaway_auto_paused",
+      entityType: "agent",
+      entityId: run.agentId,
+      details: {
+        ...eventPayload,
+        pauseReason,
+        statusChanged: Boolean(paused),
+      },
+    });
+    return decision;
   }
 
   function currentUtcDayWindow(now = new Date()) {
@@ -14006,6 +14321,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const livenessRun = finalizedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
+        const runawayGuardDecision = await evaluateAndEnforceRunawayGuard(livenessRun, agent).catch((err) => {
+          logger.error(
+            { err, runId: livenessRun.id, agentId: agent.id },
+            "failed to evaluate runaway guard after run finalization",
+          );
+          return null;
+        });
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
           try {
@@ -14023,7 +14345,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+        if (
+          runawayGuardDecision?.severity !== "hard_stop" &&
+          outcome === "failed" &&
+          isMaxTurnExhaustionRun(livenessRun)
+        ) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
             await scheduleBoundedRetryForRun(livenessRun, agent, {
@@ -14044,12 +14370,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        } else if (
+          runawayGuardDecision?.severity !== "hard_stop" &&
+          outcome === "failed" &&
+          readTransientRecoveryContractFromRun(livenessRun)
+        ) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
-        await handleRunLivenessContinuation(livenessRun);
+        await handleRunLivenessContinuation(livenessRun, agent);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
             ? {
@@ -15465,6 +15795,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    if (source === "timer" && policy.cooldownSec > 0) {
+      const cooldownCutoff = new Date(Date.now() - policy.cooldownSec * 1000);
+      const recentRun = await db
+        .select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          gte(heartbeatRuns.finishedAt, cooldownCutoff),
+        ))
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (recentRun) {
+        const recentCooldownAudit = await db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agent.id),
+            eq(agentWakeupRequests.source, "timer"),
+            eq(agentWakeupRequests.reason, "heartbeat.cooldown_active"),
+            gte(agentWakeupRequests.createdAt, new Date(Date.now() - 60_000)),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!recentCooldownAudit) {
+          await writeSkippedHeartbeatRequest("heartbeat.cooldown_active", {
+            cooldownSec: policy.cooldownSec,
+            previousRunId: recentRun.id,
+            previousRunFinishedAt: recentRun.finishedAt?.toISOString() ?? null,
+            eligibleAt: recentRun.finishedAt
+              ? new Date(recentRun.finishedAt.getTime() + policy.cooldownSec * 1000).toISOString()
+              : null,
+          });
+        }
+        return null;
+      }
     }
 
     const genericTimerWake =

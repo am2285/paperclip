@@ -148,6 +148,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     resultJson?: Record<string, unknown> | null;
     adapterType?: string;
     agentName?: string;
+    maxRetryChainAgeSec?: number;
+    retryChainStartedAt?: string;
   }) {
     const adapterType = input.adapterType ?? "codex_local";
     const agentName = input.agentName ?? (adapterType === "claude_local" ? "ClaudeCoder" : "CodexCoder");
@@ -171,6 +173,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         heartbeat: {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
+          ...(input.maxRetryChainAgeSec != null
+            ? { maxRetryChainAgeSec: input.maxRetryChainAgeSec }
+            : {}),
         },
       },
       permissions: {},
@@ -199,11 +204,59 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       contextSnapshot: {
         issueId: randomUUID(),
         wakeReason: "issue_assigned",
+        ...(input.retryChainStartedAt
+          ? { retryChainStartedAt: input.retryChainStartedAt }
+          : {}),
       },
       updatedAt: input.now,
       createdAt: input.now,
     });
   }
+
+  it("suppresses retries after the configured cumulative chain age", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-03-19T02:00:01.000Z");
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
+      maxRetryChainAgeSec: 3_600,
+      retryChainStartedAt: "2026-03-19T01:00:00.000Z",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "retry_chain_age_exhausted",
+    });
+    await expect(
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId)),
+    ).resolves.toHaveLength(1);
+    await expect(
+      db
+        .select({ message: heartbeatRunEvents.message })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId)),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Automatic retry suppressed because the retry chain exceeded its cumulative age limit",
+        }),
+      ]),
+    );
+  });
 
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();

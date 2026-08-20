@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1241,10 +1241,22 @@ export function attentionService(db: Db) {
           updatedAt: agents.updatedAt,
         })
         .from(agents)
-        .where(and(eq(agents.companyId, companyId), eq(agents.status, "error")))
+        .where(and(
+          eq(agents.companyId, companyId),
+          or(
+            eq(agents.status, "error"),
+            and(
+              eq(agents.status, "paused"),
+              sql`${agents.errorReason} like '[runaway_guard]%'`,
+            ),
+          ),
+        ))
         .orderBy(desc(agents.updatedAt), desc(agents.id));
 
       for (const agent of erroredAgents) {
+        const runawayGuardPause =
+          agent.status === "paused" &&
+          agent.errorReason?.startsWith("[runaway_guard]") === true;
         const dedupKey = `agent_error:${agent.id}`;
         add(createItem({
           companyId,
@@ -1259,14 +1271,16 @@ export function attentionService(db: Db) {
             href: `/${prefix}/agents/${agent.id}`,
             metadata: { role: agent.role, errorReason: agent.errorReason },
           },
-          whyNow: "Agent is in error status and needs operator action or dismissal.",
+          whyNow: runawayGuardPause
+            ? "Runaway guard automatically paused this agent after anomalous token, frequency, or failure growth."
+            : "Agent is in error status and needs operator action or dismissal.",
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Inspect the agent error." },
             { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
           ),
           inlineResolvable: true,
-          entryRule: "agents.status = 'error'",
-          exitRule: "Agent leaves error status or the row is dismissed.",
+          entryRule: "agents.status = 'error', or agent is automatically paused by the runaway guard.",
+          exitRule: "Agent leaves error/guard-paused status or the row is dismissed.",
           dedupKey,
           severity: "high",
           activityAt: toIso(agent.updatedAt),
