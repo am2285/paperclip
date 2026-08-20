@@ -2881,6 +2881,7 @@ export function accessRoutes(
       const key = await boardAuth.createNamedBoardApiKey({
         userId: req.actor.userId,
         name: req.body.name,
+        ...(req.body.accessMode ? { accessMode: req.body.accessMode } : {}),
         expiresAt: req.body.expiresAt === undefined ? undefined : req.body.expiresAt,
       });
       const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
@@ -2899,6 +2900,7 @@ export function accessRoutes(
           details: {
             boardApiKeyId: key.id,
             name: key.name,
+            accessMode: key.accessMode,
             requestedCompanyId: req.body.requestedCompanyId ?? null,
             expiresAt: key.expiresAt?.toISOString() ?? null,
           },

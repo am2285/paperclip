@@ -236,6 +236,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
+        if (
+          boardKey.accessMode === "read_only"
+          && !["GET", "HEAD", "OPTIONS"].includes(req.method.toUpperCase())
+        ) {
+          next(forbidden("Read-only board API key cannot mutate Paperclip.", {
+            code: "board_api_key_read_only",
+          }));
+          return;
+        }
         await boardAuth.touchBoardApiKey(boardKey.id);
         req.actor = {
           type: "board",
