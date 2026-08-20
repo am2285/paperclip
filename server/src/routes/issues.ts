@@ -3427,7 +3427,7 @@ export function issueRoutes(
       assigneeUserId: string | null;
       status: string;
     },
-    action: "issue:comment" | "issue:read" | "issue:mutate",
+    action: "issue:comment" | "issue:read" | "issue:mutate" | "tasks:mutate",
   ) {
     return access.decide({
       actor: req.actor,
@@ -3595,6 +3595,12 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      const explicitMutationDecision = await decideIssueAccess(req, issue, "tasks:mutate");
+      const hasExplicitIssueMutationGrant =
+        explicitMutationDecision.reason === "allow_explicit_grant" && explicitMutationDecision.grant?.permissionKey === "tasks:mutate";
+      if (issue.status !== "in_progress" && hasExplicitIssueMutationGrant) {
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
