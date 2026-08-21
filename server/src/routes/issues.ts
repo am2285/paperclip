@@ -3509,6 +3509,14 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
 
+  function isDelegatedIssueMutationDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return (
+      decision.reason === "allow_manager_chain" ||
+      decision.reason === "allow_parent_assignee" ||
+      (decision.reason === "allow_explicit_grant" && decision.grant?.permissionKey === "tasks:mutate")
+    );
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -3598,7 +3606,11 @@ export function issueRoutes(
       const explicitMutationDecision = await decideIssueAccess(req, issue, "tasks:mutate");
       const hasExplicitIssueMutationGrant =
         explicitMutationDecision.reason === "allow_explicit_grant" && explicitMutationDecision.grant?.permissionKey === "tasks:mutate";
-      if (issue.status !== "in_progress" && hasExplicitIssueMutationGrant) {
+      const hasDelegatedIssueMutationAuthority =
+        hasExplicitIssueMutationGrant ||
+        boundaryDecision.reason === "allow_manager_chain" ||
+        boundaryDecision.reason === "allow_parent_assignee";
+      if (issue.status !== "in_progress" && hasDelegatedIssueMutationAuthority) {
         return true;
       }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
@@ -4177,7 +4189,15 @@ export function issueRoutes(
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      projectId?: string | null;
+      parentId?: string | null;
+      assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+      status: string;
+    },
   ) {
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
 
@@ -4243,6 +4263,20 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
+
+    const authorizationIssue = {
+      ...issue,
+      projectId: issue.projectId ?? null,
+      parentId: issue.parentId ?? null,
+      assigneeUserId: issue.assigneeUserId ?? null,
+    };
+    const boundaryDecision = await decideIssueAccess(req, authorizationIssue, "issue:mutate");
+    const explicitMutationDecision = await decideIssueAccess(req, authorizationIssue, "tasks:mutate");
+    if (
+      (boundaryDecision.allowed && isDelegatedIssueMutationDecision(boundaryDecision)) ||
+      (explicitMutationDecision.allowed && isDelegatedIssueMutationDecision(explicitMutationDecision))
+    ) return true;
+
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
       return true;
     }

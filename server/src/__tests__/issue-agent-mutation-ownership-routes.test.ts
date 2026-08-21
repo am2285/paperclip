@@ -1652,6 +1652,53 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+
+  it.each([
+    ["done", "todo", 403, "Agent cannot mutate another agent's issue"],
+    ["cancelled", "todo", 403, "Agent cannot mutate another agent's issue"],
+    ["blocked", "done", 403, "Agent cannot mutate another agent's issue"],
+  ])(
+    "rejects peer agent direct status transitions from %s to %s",
+    async (status, nextStatus, expectedStatus, expectedError) => {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed:
+          input.action === "tasks:assign" ||
+          input.action === "issue:comment" ||
+          input.action === "issue:read" ||
+          input.action === "issue:mutate" ||
+          input.action === "company_scope:read",
+        action: input.action,
+        reason:
+          input.action === "issue:mutate"
+            ? "allow_visible_issue_write"
+            : input.action === "tasks:assign" ||
+                input.action === "issue:comment" ||
+                input.action === "issue:read" ||
+                input.action === "company_scope:read"
+              ? "allow_explicit_grant"
+              : "deny_missing_grant",
+        explanation:
+          input.action === "issue:mutate"
+            ? "Allowed by default visible issue write."
+            : input.action === "tasks:assign" ||
+                input.action === "issue:comment" ||
+                input.action === "issue:read" ||
+                input.action === "company_scope:read"
+              ? "Allowed by test default."
+              : "Missing permission.",
+      }));
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status, assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: nextStatus });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(expectedStatus);
+      expect(res.body.error).toBe(expectedError);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
