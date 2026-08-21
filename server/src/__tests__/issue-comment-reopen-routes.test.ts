@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -44,8 +44,10 @@ const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
+const mockDbSelectLimit = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   orderBy: mockDbSelectOrderBy,
+  limit: mockDbSelectLimit,
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([]).then(onFulfilled, onRejected),
 })));
@@ -189,11 +191,25 @@ function createApp() {
   return app;
 }
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+let routeModulesPromise: Promise<[
+  typeof import("../routes/issues.js"),
+  typeof import("../middleware/index.js"),
+]> | null = null;
+
+function loadRouteModules() {
+  routeModulesPromise ??= Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
   ]);
+  return routeModulesPromise;
+}
+
+beforeAll(async () => {
+  await loadRouteModules();
+});
+
+async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+  const [{ issueRoutes }, { errorHandler }] = await loadRouteModules();
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -308,12 +324,15 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectFrom.mockReset();
     mockDbSelectWhere.mockReset();
     mockDbSelectOrderBy.mockReset();
+    mockDbSelectLimit.mockReset();
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
     mockDbSelectOrderBy.mockResolvedValue([]);
+    mockDbSelectLimit.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
+      limit: mockDbSelectLimit,
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([]).then(onFulfilled, onRejected),
     }));
