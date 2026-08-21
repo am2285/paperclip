@@ -3509,6 +3509,18 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
 
+  function isDefaultOpenIssueWriteDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_visible_issue_write";
+  }
+
+  function isDelegatedIssueMutationDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return (
+      decision.reason === "allow_manager_chain" ||
+      decision.reason === "allow_parent_assignee" ||
+      (decision.reason === "allow_explicit_grant" && decision.grant?.permissionKey === "tasks:mutate")
+    );
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -4247,6 +4259,14 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
+
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const explicitMutationDecision = await decideIssueAccess(req, issue, "tasks:mutate");
+    if (
+      (boundaryDecision.allowed && isDelegatedIssueMutationDecision(boundaryDecision)) ||
+      (explicitMutationDecision.allowed && isDelegatedIssueMutationDecision(explicitMutationDecision))
+    ) return true;
+
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
       return true;
     }
