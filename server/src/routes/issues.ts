@@ -3509,10 +3509,6 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
 
-  function isDefaultOpenIssueWriteDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
-    return decision !== true && decision.reason === "allow_visible_issue_write";
-  }
-
   function isDelegatedIssueMutationDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
     return (
       decision.reason === "allow_manager_chain" ||
@@ -4193,7 +4189,15 @@ export function issueRoutes(
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      projectId?: string | null;
+      parentId?: string | null;
+      assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+      status: string;
+    },
   ) {
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
 
@@ -4260,8 +4264,14 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
 
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
-    const explicitMutationDecision = await decideIssueAccess(req, issue, "tasks:mutate");
+    const authorizationIssue = {
+      ...issue,
+      projectId: issue.projectId ?? null,
+      parentId: issue.parentId ?? null,
+      assigneeUserId: issue.assigneeUserId ?? null,
+    };
+    const boundaryDecision = await decideIssueAccess(req, authorizationIssue, "issue:mutate");
+    const explicitMutationDecision = await decideIssueAccess(req, authorizationIssue, "tasks:mutate");
     if (
       (boundaryDecision.allowed && isDelegatedIssueMutationDecision(boundaryDecision)) ||
       (explicitMutationDecision.allowed && isDelegatedIssueMutationDecision(explicitMutationDecision))
