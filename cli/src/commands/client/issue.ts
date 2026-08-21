@@ -75,6 +75,7 @@ interface IssueUpdateOptions extends BaseClientOptions {
   requestDepth?: string;
   billingCode?: string;
   comment?: string;
+  suppressWake?: boolean;
   hiddenAt?: string;
 }
 
@@ -154,6 +155,10 @@ interface InteractionAcceptOptions extends BaseClientOptions {
 
 interface InteractionReasonOptions extends BaseClientOptions {
   reason?: string;
+}
+
+interface InteractionCancelOptions extends InteractionReasonOptions {
+  administrative?: boolean;
 }
 
 interface InteractionRespondOptions extends BaseClientOptions {
@@ -328,6 +333,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--request-depth <n>", "Request depth integer")
       .option("--billing-code <code>", "Billing code")
       .option("--comment <text>", "Optional comment to add with update")
+      .option("--suppress-wake", "Board-only audit update that must not wake or resume agents")
       .option("--hidden-at <iso8601|null>", "Set hiddenAt timestamp or literal 'null'")
       .action(async (issueId: string, opts: IssueUpdateOptions) => {
         try {
@@ -344,6 +350,7 @@ export function registerIssueCommands(program: Command): void {
             requestDepth: parseOptionalInt(opts.requestDepth),
             billingCode: opts.billingCode,
             comment: opts.comment,
+            suppressWake: opts.suppressWake,
             hiddenAt: parseHiddenAt(opts.hiddenAt),
           });
 
@@ -762,29 +769,53 @@ export function registerIssueCommands(program: Command): void {
       }),
   );
 
-  for (const [name, action, schema, description] of [
-    ["interaction:reject", "reject", rejectIssueThreadInteractionSchema, "Reject an issue thread interaction"],
-    ["interaction:cancel", "cancel", cancelIssueThreadInteractionSchema, "Cancel an issue thread interaction"],
-  ] as const) {
-    addCommonClientOptions(
-      issue
-        .command(name)
-        .description(description)
-        .argument("<issueId>", "Issue ID")
-        .argument("<interactionId>", "Interaction ID")
-        .option("--reason <text>", "Reason")
-        .action(async (issueId: string, interactionId: string, opts: InteractionReasonOptions) => {
-          try {
-            const ctx = resolveCommandContext(opts);
-            const payload = schema.parse({ reason: opts.reason });
-            const interaction = await ctx.api.post(`${apiPath`/api/issues/${issueId}/interactions/${interactionId}`}/${action}`, payload);
-            printOutput(interaction, { json: ctx.json });
-          } catch (err) {
-            handleCommandError(err);
-          }
-        }),
-    );
-  }
+  addCommonClientOptions(
+    issue
+      .command("interaction:reject")
+      .description("Reject an issue thread interaction")
+      .argument("<issueId>", "Issue ID")
+      .argument("<interactionId>", "Interaction ID")
+      .option("--reason <text>", "Reason")
+      .action(async (issueId: string, interactionId: string, opts: InteractionReasonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = rejectIssueThreadInteractionSchema.parse({ reason: opts.reason });
+          const interaction = await ctx.api.post(
+            apiPath`/api/issues/${issueId}/interactions/${interactionId}/reject`,
+            payload,
+          );
+          printOutput(interaction, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("interaction:cancel")
+      .description("Cancel an issue thread interaction")
+      .argument("<issueId>", "Issue ID")
+      .argument("<interactionId>", "Interaction ID")
+      .option("--reason <text>", "Reason")
+      .option("--administrative", "Board-only no-wake expiration of a stale confirmation on a terminal issue")
+      .action(async (issueId: string, interactionId: string, opts: InteractionCancelOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = cancelIssueThreadInteractionSchema.parse({
+            reason: opts.reason,
+            administrative: opts.administrative,
+          });
+          const interaction = await ctx.api.post(
+            apiPath`/api/issues/${issueId}/interactions/${interactionId}/cancel`,
+            payload,
+          );
+          printOutput(interaction, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 
   addCommonClientOptions(
     issue

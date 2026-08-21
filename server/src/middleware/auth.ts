@@ -13,13 +13,18 @@ import {
   instanceUserRoles,
 } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
+import {
+  isUuidLike,
+  normalizeAgentApiKeyScope,
+  parseStoredAgentApiKeyScope,
+  type DeploymentMode,
+} from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -231,6 +236,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
+        if (
+          boardKey.accessMode === "read_only"
+          && !["GET", "HEAD", "OPTIONS"].includes(req.method.toUpperCase())
+        ) {
+          next(forbidden("Read-only board API key cannot mutate Paperclip.", {
+            code: "board_api_key_read_only",
+          }));
+          return;
+        }
         await boardAuth.touchBoardApiKey(boardKey.id);
         req.actor = {
           type: "board",
@@ -357,12 +371,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const keyScope = parseStoredAgentApiKeyScope(key.scopeConfig);
+    if (!keyScope) {
+      logger.warn({ keyId: key.id, agentId: key.agentId }, "Rejecting agent API key with malformed scope_config");
+      next(unauthorized());
+      return;
+    }
+
     req.actor = {
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
-      keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
+      keyScope,
       onBehalfOfUserId: responsibleUserId,
       onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
         companyId: key.companyId,

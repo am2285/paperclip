@@ -1315,6 +1315,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  it("preserves continuation retry lineage across process-loss recovery", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      contextSnapshot: {
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const retryRun = await waitForValue(async () => db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows[0] ?? null));
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      wakeReason: "process_lost_retry",
+      retryReason: "issue_continuation_needed",
+      retryOfRunId: runId,
+    });
+
+    if (retryRun?.id) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
+  });
+
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",

@@ -3,6 +3,8 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
+const mockGetActiveRunForAgent = vi.hoisted(() => vi.fn(async () => null as any));
+const mockCancelRun = vi.hoisted(() => vi.fn(async () => null as any));
 const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
@@ -24,6 +26,12 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_assignee",
+      explanation: "Allowed for the assigned agent in this route test.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({
@@ -46,6 +54,9 @@ vi.mock("../services/index.js", () => ({
   }),
   heartbeatService: () => ({
     wakeup: mockWakeup,
+    getRun: vi.fn(async () => null),
+    getActiveRunForAgent: mockGetActiveRunForAgent,
+    cancelRun: mockCancelRun,
     reportRunActivity: vi.fn(async () => undefined),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
@@ -100,7 +111,7 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   };
 });
 
-async function createApp() {
+async function createApp(actorOverrides: Record<string, unknown> = {}) {
   const emptyRows: unknown[] = [];
   const whereResult = {
     limit: vi.fn(async () => emptyRows),
@@ -127,6 +138,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -386,4 +398,154 @@ describe("issue dependency wakeups in issue routes", () => {
       );
     });
   });
+  it("suppresses dependent and parent wakes for a board audit terminalization", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "child-audit",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Obsolete audit branch",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: "parent-audit",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "child-audit",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Obsolete audit branch",
+      description: null,
+      status: "done",
+      priority: "medium",
+      parentId: "parent-audit",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "dependent-audit",
+        assigneeAgentId: "agent-2",
+        blockerIssueIds: ["child-audit"],
+      },
+    ]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
+      id: "parent-audit",
+      assigneeAgentId: "agent-9",
+      childIssueIds: ["child-audit"],
+      childIssueSummaries: [],
+      childIssueSummaryTruncated: false,
+    });
+
+    mockGetActiveRunForAgent.mockResolvedValueOnce({
+      id: "run-audit",
+      status: "running",
+      contextSnapshot: { issueId: "child-audit" },
+    });
+    mockCancelRun.mockResolvedValueOnce({
+      id: "run-audit",
+      companyId: "company-1",
+      agentId: "agent-1",
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/child-audit")
+      .send({ status: "done", suppressWake: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    await Promise.resolve();
+    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockCancelRun).toHaveBeenCalledWith(
+      "run-audit",
+      "Terminalized by board audit",
+      expect.objectContaining({
+        errorCode: "operator_interrupted",
+        resultJson: expect.objectContaining({
+          interruptionSource: "issue_audit_terminalization",
+          interruptedIssueId: "child-audit",
+        }),
+      }),
+    );
+    expect(mockIssueService.listWakeableBlockedDependents).not.toHaveBeenCalled();
+    expect(mockIssueService.getWakeableParentAfterChildCompletion).not.toHaveBeenCalled();
+  });
+
+  it("rejects suppressWake for agent-authored issue updates", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "agent-audit",
+      companyId: "company-1",
+      identifier: "PAP-103",
+      title: "Agent-owned task",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/agent-audit")
+      .send({ title: "Audit mutation", suppressWake: true });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects suppressWake when combined with resume intent", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "resume-audit",
+      companyId: "company-1",
+      identifier: "PAP-104",
+      title: "Board task",
+      description: null,
+      status: "done",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/resume-audit")
+      .send({
+        comment: "Resume this work",
+        resume: true,
+        suppressWake: true,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("suppressWake cannot be combined");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+
 });

@@ -540,6 +540,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  suppressWake: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
 
@@ -646,6 +647,7 @@ export const addIssueCommentSchema = z.object({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  suppressWake: z.boolean().optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
@@ -1218,6 +1220,7 @@ export type RejectIssueThreadInteraction = z.infer<typeof rejectIssueThreadInter
 
 export const cancelIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
+  administrative: z.boolean().optional(),
 });
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 

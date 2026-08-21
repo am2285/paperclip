@@ -87,6 +87,7 @@ export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSche
 
 export const createBoardApiKeySchema = z.object({
   name: z.string().trim().min(1).max(120).default("paperclipai cli"),
+  accessMode: z.enum(["full", "read_only"]).optional(),
   expiresAt: z.coerce.date().optional().nullable(),
   requestedCompanyId: z.string().uuid().optional().nullable(),
 });

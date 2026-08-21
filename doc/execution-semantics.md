@@ -139,6 +139,7 @@ The active-lock lifecycle is part of the checkout contract:
 - when a run reaches `succeeded`, `failed`, `cancelled`, or `timed_out`, finalization must compare-and-clear lock columns that still point at that run
 - finalization must not clear a lock already reacquired by a successor run
 - process-loss retry handoff must not leave `checkoutRunId` pinned to the failed run when `executionRunId` moves to the retry run
+- a process-loss retry of an issue-continuation run must preserve the `issue_continuation_needed` retry lineage so the continuation cap and recovery escalation cannot be reset by alternating recovery paths
 - checkout and checkout-owner checks may self-heal lock columns that point at terminal or missing runs before evaluating conflicts
 - the recovery sweeper may clear rows whose checkout and execution locks all point at terminal or missing runs
 

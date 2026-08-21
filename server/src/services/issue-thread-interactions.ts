@@ -2036,6 +2036,59 @@ export function issueThreadInteractionService(db: Db) {
       return expired;
     },
 
+    expireConfirmationAdministratively: async (
+      issue: { id: string; companyId: string; status: string },
+      interactionId: string,
+      input: CancelIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      const data = cancelIssueThreadInteractionSchema.parse(input);
+      if (data.administrative !== true) {
+        throw unprocessable("Administrative expiration must be explicitly requested");
+      }
+      if (!isTerminalIssueStatus(issue.status)) {
+        throw unprocessable("Administrative expiration requires a terminal issue");
+      }
+
+      const current = await getPendingInteractionForResolution({ issue, interactionId });
+      if (!isRequestConfirmationLikeKind(current.kind)) {
+        throw unprocessable("Administrative expiration only supports confirmation interactions");
+      }
+
+      const reason = data.reason?.trim() || null;
+      const now = new Date();
+      const updated = await db.transaction(async (tx) => {
+        await resolveLinkedToolActionRequests(tx, current, {
+          status: "expired",
+          fromStatuses: ["pending", "approved"],
+          actor,
+          now,
+        });
+        const [resolved] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: buildAdministrativeOutcomeResult(current, "issue_closed", reason),
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!resolved) throw conflict("Interaction has already been resolved");
+        return resolved;
+      });
+
+      await touchIssue(db, issue.id);
+      const expired = hydrateInteraction(updated);
+      await emitInteractionResolvedTelemetry(db, expired);
+      return expired;
+    },
+
     withdrawInteraction: async (
       issue: { id: string; companyId: string },
       interactionId: string,

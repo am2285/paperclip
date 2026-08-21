@@ -24,6 +24,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
   listAttachments: vi.fn(),
   listComments: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -429,6 +430,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.list.mockReset();
+    mockIssueService.listAcceptedPlanDecompositions.mockReset();
     mockIssueService.listAttachments.mockReset();
     mockIssueService.listComments.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
@@ -608,6 +610,7 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       body: "comment",
     });
+    mockIssueService.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.listComments.mockResolvedValue([
       {
@@ -699,6 +702,82 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Task bridge keys cannot use company-wide issue list APIs");
     expect(mockIssueService.list).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("mediates the full task_bridge create boundary before persistence", async () => {
+    const allowedProjectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const outsideProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      id: issueId,
+      projectId: allowedProjectId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "deny_scope" : "allow_explicit_grant",
+      explanation: input.action === "tasks:assign"
+        ? "Task bridge key is outside its approved parent or project boundary."
+        : "Allowed by test default.",
+    }));
+    const app = await createApp(peerActor({
+      keyId: "99999999-9999-4999-8999-999999999999",
+      keyScope: {
+        kind: "task_bridge",
+        projectId: allowedProjectId,
+        parentIssueId: issueId,
+        allowedAssigneeAgentIds: [ownerAgentId],
+      },
+    }));
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Conflicting bridge task",
+        projectId: outsideProjectId,
+        parentId: issueId,
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error).toContain("outside its approved parent or project boundary");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it("denies task_bridge issue subresources outside scope before querying subresources", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:read" && input.action !== "issue:comment",
+      action: input.action,
+      reason:
+        input.action === "issue:read" || input.action === "issue:comment"
+          ? "deny_scope"
+          : "allow_explicit_grant",
+      explanation:
+        input.action === "issue:read" || input.action === "issue:comment"
+          ? "Task bridge key is outside its approved boundary."
+          : "Allowed by test default.",
+    }));
+    const app = await createApp(peerActor({
+      keyId: "99999999-9999-4999-8999-999999999999",
+      keyScope: {
+        kind: "task_bridge",
+        projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        allowedAssigneeAgentIds: [ownerAgentId],
+      },
+    }));
+
+    await request(app).get(`/api/issues/${issueId}/recovery-actions`).expect(403);
+    await request(app).get(`/api/issues/${issueId}/attachments`).expect(403);
+    await request(app).get(`/api/issues/${issueId}/accepted-plan-decompositions`).expect(403);
+    await request(app).get(`/api/issues/${issueId}/comments`).expect(403);
+    await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "outside scope" })
+      .expect(403);
+
+    expect(mockIssueRecoveryActionService.getActiveForIssue).not.toHaveBeenCalled();
+    expect(mockIssueService.listAttachments).not.toHaveBeenCalled();
+    expect(mockIssueService.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
+    expect(mockIssueService.listComments).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("uses the company-scope fast path on the issue list route", async () => {
@@ -1489,6 +1568,75 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows agents with explicit issue mutation grants to patch non-active assigned issues", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate" || input.action === "tasks:mutate" || input.action === "company_scope:read",
+      action: input.action,
+      reason: input.action === "tasks:mutate" ? "allow_explicit_grant" : input.action === "issue:mutate" ? "allow_company_agent" : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:mutate"
+          ? "Allowed by explicit grant tasks:mutate."
+          : "Missing permission.",
+      ...(input.action === "tasks:mutate"
+        ? {
+            grant: {
+              principalType: "agent",
+              principalId: peerAgentId,
+              permissionKey: "tasks:mutate",
+              scope: { issueIds: [issueId] },
+            },
+          }
+        : {}),
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "done", assigneeAgentId: ownerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({
+      description: "Updated projection",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ description: "Updated projection" }),
+    );
+  });
+
+  it("keeps active checkout ownership ahead of explicit issue mutation grants", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate" || input.action === "tasks:mutate",
+      action: input.action,
+      reason: input.action === "tasks:mutate" ? "allow_explicit_grant" : input.action === "issue:mutate" ? "allow_company_agent" : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:mutate"
+          ? "Allowed by explicit grant tasks:mutate."
+          : "Missing permission.",
+      ...(input.action === "tasks:mutate"
+        ? {
+            grant: {
+              principalType: "agent",
+              principalId: peerAgentId,
+              permissionKey: "tasks:mutate",
+              scope: { issueIds: [issueId] },
+            },
+          }
+        : {}),
+    }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({
+      description: "Updated projection",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
@@ -1672,6 +1820,96 @@ describe("agent issue mutation checkout ownership", () => {
         }),
       }),
     );
+  });
+
+  it("denies task_bridge project moves outside scope before updating", async () => {
+    const keyId = "99999999-9999-4999-8999-999999999999";
+    const allowedProjectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const outsideProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: peerAgentId,
+      projectId: allowedProjectId,
+      originKind: "task_bridge",
+      originId: keyId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "deny_scope" : "allow_explicit_grant",
+      explanation: input.action === "tasks:assign"
+        ? "Task bridge key is outside its approved parent or project boundary."
+        : "Allowed by test default.",
+    }));
+
+    const app = await createApp(peerActor({
+      keyId,
+      keyScope: {
+        kind: "task_bridge",
+        projectId: allowedProjectId,
+        allowedAssigneeAgentIds: [ownerAgentId],
+      },
+    }));
+    const response = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ projectId: outsideProjectId });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error).toContain("outside its approved parent or project boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("reauthorizes a task_bridge boundary move during workflow-controlled reassignment", async () => {
+    const keyId = "99999999-9999-4999-8999-999999999999";
+    const allowedProjectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const outsideProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: peerAgentId,
+      projectId: allowedProjectId,
+      originKind: "task_bridge",
+      originId: keyId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "deny_scope" : "allow_explicit_grant",
+      explanation: input.action === "tasks:assign"
+        ? "Task bridge key is outside its approved parent or project boundary."
+        : "Allowed by test default.",
+    }));
+
+    const app = await createApp(peerActor({
+      keyId,
+      keyScope: {
+        kind: "task_bridge",
+        projectId: allowedProjectId,
+        allowedAssigneeAgentIds: [ownerAgentId],
+      },
+    }));
+    const response = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        projectId: outsideProjectId,
+        status: "in_review",
+        executionPolicy: {
+          stages: [
+            {
+              id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              type: "review",
+              participants: [{ type: "agent", agentId: ownerAgentId }],
+            },
+          ],
+        },
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        projectId: outsideProjectId,
+        assigneeAgentId: ownerAgentId,
+      }),
+    }));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("uses the authorization decision path for assignment changes", async () => {

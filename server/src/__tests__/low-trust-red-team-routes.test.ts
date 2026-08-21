@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import express from "express";
 import request from "supertest";
 import { WebSocketServer } from "ws";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -1405,7 +1405,10 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
         status: "succeeded",
         finishedAt: new Date(),
         updatedAt: new Date(),
-      }).where(eq(heartbeatRuns.id, fixture.runs.standard.id));
+      }).where(inArray(heartbeatRuns.id, [
+        fixture.runs.standard.id,
+        fixture.runs.standardReport.id,
+      ]));
       await db.update(agents).set({
         status: "idle",
         adapterType: "openclaw_gateway",
@@ -1424,7 +1427,10 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       await db.update(heartbeatRuns).set({
         status: "succeeded",
         finishedAt: new Date("2026-05-14T12:02:00.000Z"),
-      }).where(eq(heartbeatRuns.id, fixture.runs.standard.id));
+      }).where(inArray(heartbeatRuns.id, [
+        fixture.runs.standard.id,
+        fixture.runs.standardReport.id,
+      ]));
 
       const run = await heartbeat.wakeup(fixture.agents.standard.id, {
         source: "automation",

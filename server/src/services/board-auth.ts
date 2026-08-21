@@ -163,6 +163,7 @@ export function boardAuthService(db: Db) {
   async function createNamedBoardApiKey(input: {
     userId: string;
     name: string;
+    accessMode?: "full" | "read_only";
     expiresAt?: Date | null;
   }) {
     const token = createBoardApiToken();
@@ -171,6 +172,7 @@ export function boardAuthService(db: Db) {
       .values({
         userId: input.userId,
         name: input.name.trim(),
+        accessMode: input.accessMode ?? "full",
         keyHash: hashBearerToken(token),
         expiresAt: input.expiresAt === undefined ? boardApiKeyExpiresAt() : input.expiresAt,
       })
@@ -180,6 +182,7 @@ export function boardAuthService(db: Db) {
     return {
       id: created.id,
       name: created.name,
+      accessMode: created.accessMode,
       token,
       createdAt: created.createdAt,
       lastUsedAt: created.lastUsedAt,
@@ -207,6 +210,7 @@ export function boardAuthService(db: Db) {
       .select({
         id: boardApiKeys.id,
         name: boardApiKeys.name,
+        accessMode: boardApiKeys.accessMode,
         createdAt: boardApiKeys.createdAt,
         lastUsedAt: boardApiKeys.lastUsedAt,
         revokedAt: boardApiKeys.revokedAt,
@@ -223,6 +227,7 @@ export function boardAuthService(db: Db) {
         id: boardApiKeys.id,
         userId: boardApiKeys.userId,
         name: boardApiKeys.name,
+        accessMode: boardApiKeys.accessMode,
         createdAt: boardApiKeys.createdAt,
         lastUsedAt: boardApiKeys.lastUsedAt,
         revokedAt: boardApiKeys.revokedAt,

@@ -7,6 +7,7 @@ export const boardApiKeys = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    accessMode: text("access_mode").notNull().default("full"),
     keyHash: text("key_hash").notNull(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
