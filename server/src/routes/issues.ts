@@ -3598,7 +3598,11 @@ export function issueRoutes(
       const explicitMutationDecision = await decideIssueAccess(req, issue, "tasks:mutate");
       const hasExplicitIssueMutationGrant =
         explicitMutationDecision.reason === "allow_explicit_grant" && explicitMutationDecision.grant?.permissionKey === "tasks:mutate";
-      if (issue.status !== "in_progress" && hasExplicitIssueMutationGrant) {
+      const hasDelegatedIssueMutationAuthority =
+        hasExplicitIssueMutationGrant ||
+        boundaryDecision.reason === "allow_manager_chain" ||
+        boundaryDecision.reason === "allow_parent_assignee";
+      if (issue.status !== "in_progress" && hasDelegatedIssueMutationAuthority) {
         return true;
       }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
