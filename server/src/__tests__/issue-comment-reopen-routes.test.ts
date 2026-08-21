@@ -225,6 +225,8 @@ function makeIssue(status: "backlog" | "todo" | "done" | "blocked" | "cancelled"
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
     status,
+    projectId: null,
+    parentId: null,
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
     createdByUserId: "local-board",
@@ -1951,6 +1953,65 @@ describe.sequential("issue comment reopen routes", () => {
         }),
         contextSnapshot: expect.objectContaining({
           wakeReason: "issue_reopened_via_comment",
+          resumeIntent: true,
+          followUpRequested: true,
+        }),
+      }),
+    );
+  });
+
+  it("allows explicit resume intent from a parent issue assignee", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      parentId: "33333333-3333-4333-8333-333333333333",
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      if (input.action === "tasks:manage_active_checkouts") {
+        return {
+          allowed: false,
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "Missing active checkout override.",
+        };
+      }
+      if (input.action === "issue:mutate") {
+        return {
+          allowed: true,
+          action: input.action,
+          reason: "allow_parent_assignee",
+          explanation: "Allowed because the actor owns the parent issue for this child issue.",
+        };
+      }
+      return {
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      };
+    });
+
+    const res = await request(await installActor(createApp(), agentActor("44444444-4444-4444-8444-444444444444")))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please revise this child", resume: true });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: "44444444-4444-4444-8444-444444444444",
+        actorUserId: null,
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
           resumeIntent: true,
           followUpRequested: true,
         }),

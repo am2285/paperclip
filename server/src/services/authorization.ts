@@ -110,6 +110,7 @@ export type AuthorizationDecision = {
     | "allow_direct_parent_report"
     | "allow_visible_issue_write"
     | "allow_self"
+    | "allow_parent_assignee"
     | "allow_company_agent"
     | "allow_company_member"
     | "allow_simple_company_member"
@@ -162,8 +163,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:comment") return null;
-  if (action === "issue:mutate") return "tasks:mutate";
+  if (action === "issue:comment" || action === "issue:mutate") return null;
   return action;
 }
 
@@ -1322,6 +1322,12 @@ export function authorizationService(db: Db) {
     return isAgentInSubtree(db, companyId, managerAgentId, assigneeAgentId);
   }
 
+  async function isAssignedParentOwner(companyId: string, actorAgentId: string, parentIssueId: string | null | undefined) {
+    if (!parentIssueId) return false;
+    const parent = await loadIssue(parentIssueId);
+    return parent?.companyId === companyId && parent.assigneeAgentId === actorAgentId;
+  }
+
   function commentAuthorCanGrantIssueMention(input: {
     mentionedAgentId: string;
     issueAssigneeAgentId: string | null;
@@ -1511,6 +1517,20 @@ export function authorizationService(db: Db) {
       });
       if (scopedDecision.allowed || broadDecision.reason === "deny_missing_grant") return scopedDecision;
       return broadDecision;
+    }
+
+    async function decideWithIssueMutationGrant(
+      principalType: PrincipalType,
+      principalId: string,
+    ): Promise<AuthorizationDecision> {
+      return decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: "tasks:mutate",
+        scope: input.scope,
+      });
     }
 
     async function decideWithAgentConfigReadGrant(
@@ -2191,6 +2211,10 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
+      if (input.action === "issue:mutate") {
+        const issueMutationGrantDecision = await decideWithIssueMutationGrant("agent", actorAgentId);
+        if (issueMutationGrantDecision.allowed) return issueMutationGrantDecision;
+      }
       if (
         input.action === "issue:mutate" &&
         resource.assigneeAgentId &&
@@ -2200,6 +2224,16 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_manager_chain",
           explanation: "Allowed because the actor manages the issue assignee in the reporting chain.",
+        });
+      }
+      if (
+        input.action === "issue:mutate" &&
+        await isAssignedParentOwner(companyId, actorAgentId, resource?.parentIssueId)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_parent_assignee",
+          explanation: "Allowed because the actor owns the parent issue for this child issue.",
         });
       }
       if (visibleIssueWriteDecision) return visibleIssueWriteDecision;

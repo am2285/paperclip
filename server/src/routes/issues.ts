@@ -4075,7 +4075,11 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       const hasExplicitIssueMutationGrant =
         boundaryDecision.reason === "allow_explicit_grant" && boundaryDecision.grant?.permissionKey === "tasks:mutate";
-      if (issue.status !== "in_progress" && hasExplicitIssueMutationGrant) {
+      const hasDelegatedIssueMutationAuthority =
+        hasExplicitIssueMutationGrant ||
+        boundaryDecision.reason === "allow_manager_chain" ||
+        boundaryDecision.reason === "allow_parent_assignee";
+      if (issue.status !== "in_progress" && hasDelegatedIssueMutationAuthority) {
         return true;
       }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
@@ -5116,11 +5120,13 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
+
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (boundaryDecision.allowed) return true;
+
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
       return true;
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
-    if (isDefaultOpenIssueWriteDecision(boundaryDecision)) return true;
 
     res.status(403).json({
       error: "Agent cannot request follow-up for another agent's issue",

@@ -1993,8 +1993,58 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_manager_chain",
     });
     expect(peerDecision).toMatchObject({
-      allowed: false,
-      reason: "deny_missing_grant",
+      allowed: true,
+      reason: "allow_visible_issue_write",
+    });
+  });
+
+  it("allows parent assignees to mutate direct child issues", async () => {
+    const company = await createCompany(db, "ParentChildIssueMutation");
+    const parentOwnerAgent = await createAgent(db, company.id, { role: "manager" });
+    const specialistAgent = await createAgent(db, company.id, { role: "specialist" });
+    const peerAgent = await createAgent(db, company.id, { role: "peer" });
+    const parentIssue = await createIssue(db, company.id, { assigneeAgentId: parentOwnerAgent.id });
+    const childIssue = await createIssue(db, company.id, {
+      parentId: parentIssue.id,
+      assigneeAgentId: specialistAgent.id,
+    });
+
+    const parentOwnerDecision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: parentOwnerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: childIssue.id,
+        projectId: childIssue.projectId,
+        parentIssueId: childIssue.parentId,
+        assigneeAgentId: childIssue.assigneeAgentId,
+        assigneeUserId: childIssue.assigneeUserId,
+        status: childIssue.status,
+      },
+    });
+    const peerDecision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: peerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: childIssue.id,
+        projectId: childIssue.projectId,
+        parentIssueId: childIssue.parentId,
+        assigneeAgentId: childIssue.assigneeAgentId,
+        assigneeUserId: childIssue.assigneeUserId,
+        status: childIssue.status,
+      },
+    });
+
+    expect(parentOwnerDecision).toMatchObject({
+      allowed: true,
+      reason: "allow_parent_assignee",
+    });
+    expect(peerDecision).toMatchObject({
+      allowed: true,
+      reason: "allow_visible_issue_write",
     });
   });
 
@@ -2055,8 +2105,8 @@ describeEmbeddedPostgres("authorization service", () => {
       grant: { permissionKey: "tasks:mutate" },
     });
     expect(deniedDecision).toMatchObject({
-      allowed: false,
-      reason: "deny_missing_grant",
+      allowed: true,
+      reason: "allow_visible_issue_write",
     });
   });
 
