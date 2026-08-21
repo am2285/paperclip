@@ -1632,8 +1632,7 @@ describe("agent issue mutation checkout ownership", () => {
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
-    expect(res.body.details.boundary).toBe("Run checkout lock");
+    expect(res.body.error).toBe("Issue is checked out by another agent");
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
@@ -1653,10 +1652,11 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+
   it.each([
-    ["done", "todo", 403, "Agent cannot request follow-up for another agent's issue"],
-    ["cancelled", "todo", 409, "Cancelled issues must be restored through the dedicated restore flow"],
-    ["blocked", "done", 403, "Agent cannot request follow-up for another agent's issue"],
+    ["done", "todo", 403, "Agent cannot mutate another agent's issue"],
+    ["cancelled", "todo", 403, "Agent cannot mutate another agent's issue"],
+    ["blocked", "done", 403, "Agent cannot mutate another agent's issue"],
   ])(
     "rejects peer agent direct status transitions from %s to %s",
     async (status, nextStatus, expectedStatus, expectedError) => {

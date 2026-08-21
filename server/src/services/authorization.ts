@@ -2093,7 +2093,6 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the actor owns the parent issue for this child issue.",
         });
       }
-      if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
     }
     if (
       input.action === "agent_config:update" &&
