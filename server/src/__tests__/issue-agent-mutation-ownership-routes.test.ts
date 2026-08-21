@@ -1650,7 +1650,8 @@ describe("agent issue mutation checkout ownership", () => {
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(res.body.details.boundary).toBe("Run checkout lock");
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
@@ -1676,6 +1677,33 @@ describe("agent issue mutation checkout ownership", () => {
   ])(
     "rejects peer agent direct status transitions from %s to %s",
     async (status, nextStatus, expectedStatus, expectedError) => {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed:
+          input.action === "tasks:assign" ||
+          input.action === "issue:comment" ||
+          input.action === "issue:read" ||
+          input.action === "issue:mutate" ||
+          input.action === "company_scope:read",
+        action: input.action,
+        reason:
+          input.action === "issue:mutate"
+            ? "allow_visible_issue_write"
+            : input.action === "tasks:assign" ||
+                input.action === "issue:comment" ||
+                input.action === "issue:read" ||
+                input.action === "company_scope:read"
+              ? "allow_explicit_grant"
+              : "deny_missing_grant",
+        explanation:
+          input.action === "issue:mutate"
+            ? "Allowed by default visible issue write."
+            : input.action === "tasks:assign" ||
+                input.action === "issue:comment" ||
+                input.action === "issue:read" ||
+                input.action === "company_scope:read"
+              ? "Allowed by test default."
+              : "Missing permission.",
+      }));
       mockIssueService.getById.mockResolvedValue(makeIssue({ status, assigneeAgentId: ownerAgentId }));
 
       const res = await request(await createApp(peerActor()))
