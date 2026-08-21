@@ -3984,6 +3984,14 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_visible_issue_write";
   }
 
+  function isDelegatedIssueMutationDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return (
+      decision.reason === "allow_manager_chain" ||
+      decision.reason === "allow_parent_assignee" ||
+      (decision.reason === "allow_explicit_grant" && decision.grant?.permissionKey === "tasks:mutate")
+    );
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -4073,13 +4081,7 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      const hasExplicitIssueMutationGrant =
-        boundaryDecision.reason === "allow_explicit_grant" && boundaryDecision.grant?.permissionKey === "tasks:mutate";
-      const hasDelegatedIssueMutationAuthority =
-        hasExplicitIssueMutationGrant ||
-        boundaryDecision.reason === "allow_manager_chain" ||
-        boundaryDecision.reason === "allow_parent_assignee";
-      if (issue.status !== "in_progress" && hasDelegatedIssueMutationAuthority) {
+      if (issue.status !== "in_progress" && isDelegatedIssueMutationDecision(boundaryDecision)) {
         return true;
       }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
@@ -5122,7 +5124,7 @@ export function issueRoutes(
     if (issue.assigneeAgentId === actorAgentId) return true;
 
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
-    if (boundaryDecision.allowed) return true;
+    if (boundaryDecision.allowed && isDelegatedIssueMutationDecision(boundaryDecision)) return true;
 
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
       return true;
