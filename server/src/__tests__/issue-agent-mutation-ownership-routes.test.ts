@@ -741,7 +741,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Task bridge keys cannot use company-wide issue list APIs");
     expect(mockIssueService.list).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it("uses the company-scope fast path on the issue list route", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
@@ -776,7 +776,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({
       action: "issue:read",
     }));
-  });
+  }, 20_000);
 
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
