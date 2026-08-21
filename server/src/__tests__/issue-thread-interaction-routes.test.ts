@@ -22,6 +22,7 @@ const mockInteractionService = vi.hoisted(() => ({
   answerQuestions: vi.fn(),
   submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
+  expireConfirmationAdministratively: vi.fn(),
   withdrawInteraction: vi.fn(),
 }));
 
@@ -378,6 +379,29 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:05:00.000Z",
       resolvedAt: "2026-04-20T12:05:00.000Z",
     });
+    mockInteractionService.expireConfirmationAdministratively.mockResolvedValue({
+      id: "interaction-admin",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "expired",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-admin",
+      payload: {
+        version: 1,
+        prompt: "Proceed with stale work?",
+      },
+      result: {
+        version: 1,
+        outcome: "issue_closed",
+        reason: "Terminal task audit cleanup",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
@@ -679,6 +703,37 @@ describe.sequential("issue thread interaction routes", () => {
       }),
     );
   });
+  it("administratively expires a stale confirmation without a continuation wake", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "done" }));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-admin/cancel")
+      .send({ administrative: true, reason: "Terminal task audit cleanup" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("expired");
+    expect(mockInteractionService.expireConfirmationAdministratively).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "done" }),
+      "interaction-admin",
+      { administrative: true, reason: "Terminal task audit cleanup" },
+      expect.objectContaining({ userId: "local-board" }),
+    );
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired_administratively",
+        details: expect.objectContaining({
+          administrative: true,
+          wakeSuppressed: true,
+          auditOnly: true,
+        }),
+      }),
+    );
+  });
+
 
   it("accepts request confirmations and wakes the current assignee when configured for accept-only wakeups", async () => {
     mockInteractionService.acceptInteraction.mockResolvedValueOnce({

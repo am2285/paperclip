@@ -4346,6 +4346,29 @@ export function issueRoutes(
       },
     };
   }
+  function boardAuditTerminalizationCancelOptions(input: {
+    issueId: string;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    return {
+      errorCode: "operator_interrupted",
+      resultJson: {
+        operatorInterrupted: true,
+        interruptionSource: "issue_audit_terminalization",
+        interruptedIssueId: input.issueId,
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+      eventMessage: "run interrupted by board audit terminalization",
+      eventPayload: {
+        issueId: input.issueId,
+        source: "issue_audit_terminalization",
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+    };
+  }
+
 
   async function normalizeIssueAssigneeAgentReference(
     companyId: string,
@@ -7733,10 +7756,23 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      suppressWake: suppressWakeRequestedRaw,
       ...updateFields
     } = req.body;
-    const shouldCancelActiveRunForCancelledStatus =
-      existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const suppressWakeRequested = suppressWakeRequestedRaw === true;
+    if (suppressWakeRequested && req.actor.type !== "board") {
+      throw forbidden("Only board users can suppress issue-update wakes");
+    }
+    if (suppressWakeRequested && (reopenRequested || resumeRequested || interruptRequested)) {
+      res.status(400).json({
+        error: "suppressWake cannot be combined with reopen, resume, or interrupt",
+      });
+      return;
+    }
+    const shouldCancelActiveRunForTerminalStatus =
+      !isClosedIssueStatus(existing.status) &&
+      isClosedIssueStatus(updateFields.status) &&
+      (suppressWakeRequested || updateFields.status === "cancelled");
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -7780,6 +7816,7 @@ export function issueRoutes(
       return;
     }
     const scheduledRetryForHumanComment =
+      !suppressWakeRequested &&
       shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: !!commentBody,
         issueStatus: existing.status,
@@ -7800,6 +7837,7 @@ export function issueRoutes(
       actorId: actor.actorId,
     });
     const effectiveMoveToTodoRequested =
+      !suppressWakeRequested &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         (!!commentBody &&
@@ -7876,7 +7914,7 @@ export function issueRoutes(
       }
     }
 
-    const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
+    const runToCancelForTerminalStatus = shouldCancelActiveRunForTerminalStatus
       ? await resolveActiveIssueRun(existing)
       : null;
 
@@ -8098,6 +8136,7 @@ export function issueRoutes(
       : updateFields.parentId as string | null;
     const shouldRelayStop =
       Boolean(nextParentId) &&
+      !suppressWakeRequested &&
       existing.status !== updateFields.status &&
       (updateFields.status === "blocked" || updateFields.status === "cancelled") &&
       await directParentReportDisabledForIssue({
@@ -8196,7 +8235,7 @@ export function issueRoutes(
       return;
     }
 
-    if (enteringBlocked) {
+    if (enteringBlocked && !suppressWakeRequested) {
       const blockedIssue = issue;
       let ownerNotifiedAt: Date | null = null;
       await deliverAgentUnblockNotification({
@@ -8216,9 +8255,15 @@ export function issueRoutes(
     }
 
     let cancelledStatusRunId: string | null = null;
-    if (runToCancelForCancelledStatus) {
+    if (runToCancelForTerminalStatus) {
       try {
-        const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+        const cancelled = suppressWakeRequested
+          ? await heartbeat.cancelRun(
+              runToCancelForTerminalStatus.id,
+              "Terminalized by board audit",
+              boardAuditTerminalizationCancelOptions({ issueId: existing.id, actor }),
+            )
+          : await heartbeat.cancelRun(runToCancelForTerminalStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
           await logActivity(db, {
@@ -8232,11 +8277,18 @@ export function issueRoutes(
             entityType: "heartbeat_run",
             entityId: cancelled.id,
             issueId: existing.id,
-            details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: existing.id },
+            details: {
+              agentId: cancelled.agentId,
+              source: suppressWakeRequested ? "issue_audit_terminalized" : "issue_status_cancelled",
+              issueId: existing.id,
+            },
           });
         }
       } catch (err) {
-        logger.warn({ err, issueId: existing.id, runId: runToCancelForCancelledStatus.id }, "failed to cancel run for cancelled issue");
+        logger.warn(
+          { err, issueId: existing.id, runId: runToCancelForTerminalStatus.id },
+          "failed to cancel run for terminal issue",
+        );
         await logActivity(db, {
           companyId: existing.companyId,
           actorType: actor.actorType,
@@ -8246,9 +8298,12 @@ export function issueRoutes(
           agentApiKeyId: actor.agentApiKeyId,
           action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
-          entityId: runToCancelForCancelledStatus.id,
+          entityId: runToCancelForTerminalStatus.id,
           issueId: existing.id,
-          details: { source: "issue_status_cancelled", issueId: existing.id },
+          details: {
+            source: suppressWakeRequested ? "issue_audit_terminalized" : "issue_status_cancelled",
+            issueId: existing.id,
+          },
         });
       }
     }
@@ -8362,6 +8417,7 @@ export function issueRoutes(
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        ...(suppressWakeRequested ? { wakeSuppressed: true, auditOnly: true } : {}),
         ...(commentBody ? { source: "comment" } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
@@ -8629,6 +8685,7 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          ...(suppressWakeRequested ? { wakeSuppressed: true, auditOnly: true } : {}),
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(scheduledRetrySupersededByComment
@@ -8648,14 +8705,16 @@ export function issueRoutes(
         },
       });
 
-      const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
-        issue,
-        comment,
-        {
-          agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-      );
+      const expiredInteractions = suppressWakeRequested
+        ? []
+        : await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+            issue,
+            comment,
+            {
+              agentId: actor.agentId,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+            },
+          );
       await logExpiredRequestConfirmations({
         issue,
         interactions: expiredInteractions,
@@ -8694,8 +8753,12 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
+    if (suppressWakeRequested && !isClosedIssueStatus(existing.status) && isClosedIssueStatus(issue.status)) {
+      await destroyReusableSandboxLeasesForTerminalIssue(issue);
+    }
+
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    if (!suppressWakeRequested) void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       type DependencyReadinessProvider = {
         getDependencyReadiness?: typeof svc.getDependencyReadiness;
@@ -9720,10 +9783,20 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
+      const administrative = req.body.administrative === true;
+      const interactionActor = {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      };
+      const interactionService = issueThreadInteractionService(db);
+      const interaction = administrative
+        ? await interactionService.expireConfirmationAdministratively(
+            issue,
+            interactionId,
+            req.body,
+            interactionActor,
+          )
+        : await interactionService.cancelQuestions(issue, interactionId, req.body, interactionActor);
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -9732,7 +9805,9 @@ export function issueRoutes(
         agentId: actor.agentId,
         runId: actor.runId,
         agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.thread_interaction_cancelled",
+        action: administrative
+          ? "issue.thread_interaction_expired_administratively"
+          : "issue.thread_interaction_cancelled",
         entityType: "issue",
         entityId: issue.id,
         details: {
@@ -9742,17 +9817,22 @@ export function issueRoutes(
           cancellationReason:
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.cancellationReason ?? null)
-              : null,
+              : interaction.result && "reason" in interaction.result
+                ? interaction.result.reason ?? null
+                : null,
+          ...(administrative ? { administrative: true, wakeSuppressed: true, auditOnly: true } : {}),
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
-        heartbeat,
-        issue,
-        interaction,
-        actor,
-        source: "issue.interaction.cancel",
-      });
+      if (!administrative) {
+        queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.cancel",
+        });
+      }
 
       res.json(interaction);
     },

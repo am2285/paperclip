@@ -574,6 +574,88 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
   });
+  it("administratively expires only confirmations on terminal issues and preserves their records", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Administrative expiration");
+
+    const confirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve stale work?" },
+    }, {
+      userId: "local-board",
+    });
+    const questions = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.expireConfirmationAdministratively({
+      id: issueId,
+      companyId,
+      status: "in_progress",
+    }, confirmation.id, {
+      administrative: true,
+      reason: "Audit cleanup",
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Administrative expiration requires a terminal issue");
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const expired = await interactionsSvc.expireConfirmationAdministratively({
+      id: issueId,
+      companyId,
+      status: "done",
+    }, confirmation.id, {
+      administrative: true,
+      reason: "Audit cleanup",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired.status).toBe("expired");
+    expect(expired.result).toEqual({
+      version: 1,
+      outcome: "issue_closed",
+      reason: "Audit cleanup",
+    });
+
+    await expect(interactionsSvc.expireConfirmationAdministratively({
+      id: issueId,
+      companyId,
+      status: "done",
+    }, questions.id, {
+      administrative: true,
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Administrative expiration only supports confirmation interactions");
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === confirmation.id)?.status).toBe("expired");
+    expect(rows.find((row) => row.id === questions.id)?.status).toBe("pending");
+  });
+
 
   it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
