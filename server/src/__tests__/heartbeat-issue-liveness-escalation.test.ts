@@ -406,6 +406,88 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
+  it("does not recreate a dependency wake suppressed by board audit terminalization", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "board-auditor",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: blockerIssueId,
+      details: {
+        status: "done",
+        wakeSuppressed: true,
+        auditOnly: true,
+        _previous: { status: "blocked" },
+      },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakeBackstopChecked).toBe(1);
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeAuditSuppressed).toBe(1);
+
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(0);
+  });
+
+  it("allows a later ordinary blocker completion to supersede audit wake suppression", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const now = Date.now();
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: "board-auditor",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: blockerIssueId,
+        details: {
+          status: "done",
+          wakeSuppressed: true,
+          auditOnly: true,
+          _previous: { status: "blocked" },
+        },
+        createdAt: new Date(now - 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "board-operator",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: blockerIssueId,
+        details: {
+          status: "done",
+          _previous: { status: "todo" },
+        },
+        createdAt: new Date(now - 1_000),
+      },
+    ]);
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakeAuditSuppressed).toBe(0);
+    expect(result.dependencyWakesHealed).toBe(1);
+    expect(result.dependencyWakeIssueIds).toEqual([blockedIssueId]);
+
+    const wake = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wake?.reason).toBe("issue_blockers_resolved");
+  });
+
   it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {
     await enableAutoRecovery();
     const { companyId, agentId, blockedIssueId, blockerIssueId } =

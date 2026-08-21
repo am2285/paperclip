@@ -48,6 +48,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWakeForAnyKey,
+  isLatestDependencyResolutionWakeSuppressedByBoardAudit,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
@@ -4936,6 +4937,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
+      auditSuppressed: 0,
       notReadySkipped: 0,
       candidateLimitSkipped: 0,
       deferredOrFailed: 0,
@@ -5070,6 +5072,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (existingWake) {
           result.existingWakeSkipped += 1;
+          continue;
+        }
+
+        if (
+          await isLatestDependencyResolutionWakeSuppressedByBoardAudit(db, {
+            companyId,
+            blockerIssueIds: readiness.blockerIssueIds,
+          })
+        ) {
+          result.auditSuppressed += 1;
           continue;
         }
 
@@ -5226,6 +5238,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       dependencyWakeLivePathSkipped: 0,
       dependencyWakeInteractionSkipped: 0,
       dependencyWakePauseHoldSkipped: 0,
+      dependencyWakeAuditSuppressed: 0,
       dependencyWakeNotReadySkipped: 0,
       dependencyWakeCandidateLimitSkipped: 0,
       dependencyWakeDeferredOrFailed: 0,
@@ -5245,6 +5258,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.dependencyWakeLivePathSkipped = dependencyWakeBackstop.livePathSkipped;
     result.dependencyWakeInteractionSkipped = dependencyWakeBackstop.interactionSkipped;
     result.dependencyWakePauseHoldSkipped = dependencyWakeBackstop.pauseHoldSkipped;
+    result.dependencyWakeAuditSuppressed = dependencyWakeBackstop.auditSuppressed;
     result.dependencyWakeNotReadySkipped = dependencyWakeBackstop.notReadySkipped;
     result.dependencyWakeCandidateLimitSkipped = dependencyWakeBackstop.candidateLimitSkipped;
     result.dependencyWakeDeferredOrFailed = dependencyWakeBackstop.deferredOrFailed;
