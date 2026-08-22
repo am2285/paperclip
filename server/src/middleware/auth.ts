@@ -24,7 +24,7 @@ import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unauthorized, unprocessable } from "../errors.js";
+import { conflict, forbidden, unauthorized, unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -32,6 +32,37 @@ function hashToken(token: string) {
 
 function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
+}
+
+const READ_ONLY_HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+async function rejectInactiveAgentRunMutation(
+  db: Db,
+  req: Request,
+  input: { companyId: string; agentId: string; runId: string | null | undefined },
+) {
+  if (READ_ONLY_HTTP_METHODS.has(req.method.toUpperCase())) return null;
+  const runId = normalizeOptionalString(input.runId);
+  if (!runId || !isUuidLike(runId)) return null;
+
+  const run = await db
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+
+  if (run?.status === "running") return null;
+  return conflict("Agent run is no longer active and cannot mutate Paperclip.", {
+    code: "agent_run_not_active",
+    runId,
+    runStatus: run?.status ?? "missing",
+  });
 }
 
 async function resolveLegacyRunResponsibleUserId(
@@ -336,6 +367,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         onBehalfOfMemberships,
         source: "agent_jwt",
       };
+      const inactiveRunError = await rejectInactiveAgentRunMutation(db, req, {
+        companyId: claims.company_id,
+        agentId: claims.sub,
+        runId: claims.run_id,
+      });
+      if (inactiveRunError) {
+        next(inactiveRunError);
+        return;
+      }
       next();
       return;
     }
@@ -392,6 +432,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
+
+    const inactiveRunError = await rejectInactiveAgentRunMutation(db, req, {
+      companyId: key.companyId,
+      agentId: key.agentId,
+      runId: runIdHeader,
+    });
+    if (inactiveRunError) {
+      next(inactiveRunError);
+      return;
+    }
 
     next();
   };

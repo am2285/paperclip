@@ -61,7 +61,19 @@ async function invokeHeartbeat(board: APIRequestContext, agentId: string): Promi
   const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`);
   expect(res.ok()).toBe(true);
   const run = await res.json();
-  return run.id;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const currentRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${run.id}`);
+    expect(currentRes.ok()).toBe(true);
+    const current = await currentRes.json();
+    if (current.status === "running") return run.id;
+    if (["succeeded", "failed", "cancelled", "timed_out"].includes(current.status)) {
+      throw new Error(
+        `Heartbeat run ${run.id} reached ${current.status} before becoming usable.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Heartbeat run ${run.id} did not enter running state.`);
 }
 
 async function getIssueRunLockState(board: APIRequestContext, issueId: string): Promise<IssueRunLockState> {
@@ -195,7 +207,7 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
         adapterType: "process",
         adapterConfig: {
           command: process.execPath,
-          args: ["-e", "process.stdout.write('done\\n')"],
+          args: ["-e", "setTimeout(() => process.stdout.write('done\\n'), 1000)"],
         },
       },
     });

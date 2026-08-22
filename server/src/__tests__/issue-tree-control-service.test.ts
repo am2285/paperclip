@@ -688,4 +688,70 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       resumeMode: "subtree",
     });
   });
+
+  it("holds automatic recovery after a no-wake release until a deliberate user wake", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "RecoveryAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Contained issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const svc = issueTreeControlService(db);
+    const paused = await svc.createHold(companyId, issueId, {
+      mode: "pause",
+      reason: "contain stale retries",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+    const released = await svc.releaseHold(companyId, issueId, paused.hold.id, {
+      reason: "release without execution",
+      metadata: { wakeAgents: false },
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+
+    await expect(svc.getNoWakePauseReleaseGate(companyId, issueId)).resolves.toMatchObject({
+      holdId: paused.hold.id,
+      rootIssueId: issueId,
+      issueId,
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual",
+      payload: { issueId },
+      contextSnapshot: { issueId },
+      status: "queued",
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      createdAt: new Date(released.releasedAt!.getTime() + 1),
+    });
+
+    await expect(svc.getNoWakePauseReleaseGate(companyId, issueId)).resolves.toBeNull();
+  });
 });

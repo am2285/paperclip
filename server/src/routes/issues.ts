@@ -8812,6 +8812,7 @@ export function issueRoutes(
         agentId: string;
         dependentIssueId: string;
         resolvedBlockerIssueId: string;
+        resolvedBlockerCompletedAt?: Date | string | null;
         blockerIssueIds: string[];
         source: string;
         mutation: string;
@@ -8819,6 +8820,7 @@ export function issueRoutes(
         const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
           dependentIssueId: input.dependentIssueId,
           resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+          resolvedBlockerCompletedAt: input.resolvedBlockerCompletedAt,
         });
         try {
           const existingWake = await findExistingIssueBlockersResolvedWake(db, {
@@ -8985,6 +8987,7 @@ export function issueRoutes(
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: issue.id,
+            resolvedBlockerCompletedAt: issue.completedAt,
             blockerIssueIds: dependent.blockerIssueIds,
             source: "issue.blockers_resolved",
             mutation: "blocker_done",
@@ -10541,11 +10544,13 @@ export function issueRoutes(
         agentId: string;
         dependentIssueId: string;
         resolvedBlockerIssueId: string;
+        resolvedBlockerCompletedAt?: Date | string | null;
         blockerIssueIds: string[];
       }) => {
         const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
           dependentIssueId: input.dependentIssueId,
           resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+          resolvedBlockerCompletedAt: input.resolvedBlockerCompletedAt,
         });
         try {
           const existingWake = await findExistingIssueBlockersResolvedWake(db, {
@@ -10685,6 +10690,7 @@ export function issueRoutes(
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: currentIssue.id,
+            resolvedBlockerCompletedAt: currentIssue.completedAt,
             blockerIssueIds: dependent.blockerIssueIds,
           });
         }

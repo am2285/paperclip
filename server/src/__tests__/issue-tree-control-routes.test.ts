@@ -416,4 +416,43 @@ describe("issue tree control routes", () => {
     expect(mockTreeControlService.cancelIssueStatusesForHold).not.toHaveBeenCalled();
     expect(mockTreeControlService.restoreIssueStatusesForHold).not.toHaveBeenCalled();
   });
+
+  it("cancels queued subtree wakes when a pause hold is released without waking agents", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    mockTreeControlService.releaseHold.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      mode: "pause",
+      status: "released",
+      releaseReason: "release under containment",
+      members: [{ issueId: "11111111-1111-4111-8111-111111111111" }],
+    });
+    mockTreeControlService.cancelUnclaimedWakeupsForTree.mockResolvedValue([
+      { id: "wake-1" },
+    ]);
+
+    const res = await request(app)
+      .post(
+        "/api/issues/11111111-1111-4111-8111-111111111111/tree-holds/33333333-3333-4333-8333-333333333333/release",
+      )
+      .send({ reason: "release under containment", metadata: { wakeAgents: false } });
+
+    expect(res.status).toBe(200);
+    expect(mockTreeControlService.cancelUnclaimedWakeupsForTree).toHaveBeenCalledWith(
+      "company-2",
+      "11111111-1111-4111-8111-111111111111",
+      "Cancelled because a subtree pause hold was released without waking agents",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({ wakeAgents: false, cancelledWakeupCount: 1 }),
+      }),
+    );
+  });
 });

@@ -33,7 +33,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
-  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
+  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null; status?: string };
 }) {
   const activity: Array<Record<string, unknown>> = [];
   const agentRow = {
@@ -58,6 +58,7 @@ function createDbState(input: {
         companyId: input.run.companyId,
         agentId: input.run.agentId,
         responsibleUserId: input.run.responsibleUserId ?? null,
+        status: input.run.status ?? "running",
       }
     : null;
 
@@ -284,6 +285,51 @@ describe("agent auth middleware", () => {
       onBehalfOfUserId: "user-legacy",
       source: "agent_jwt",
     });
+  });
+
+  it("rejects mutations attributed to a terminal signed agent run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "user-claim", status: "cancelled" },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .patch(`/companies/${companyId}/issues/${issueId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ title: "late write" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("agent_run_not_active");
+    expect(res.body.details).toMatchObject({
+      runId,
+      runStatus: "cancelled",
+    });
+  });
+
+  it("allows terminal signed agent runs to retain read-only access", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "user-claim", status: "failed" },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", agentId, companyId, runId });
   });
 
   it("rejects fork-minted run JWTs before issue reads or writes reach live issue data", async () => {

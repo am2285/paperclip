@@ -369,6 +369,16 @@ export function issueTreeControlRoutes(db: Db) {
           runId: actor.runId,
         },
       });
+      const wakeAgents = typeof req.body.metadata === "object"
+        && req.body.metadata !== null
+        && (req.body.metadata as Record<string, unknown>).wakeAgents === true;
+      const cancelledWakeups = hold.mode === "pause" && !wakeAgents
+        ? await treeControlSvc.cancelUnclaimedWakeupsForTree(
+            root.companyId,
+            root.id,
+            "Cancelled because a subtree pause hold was released without waking agents",
+          )
+        : [];
       await logActivity(db, {
         companyId: root.companyId,
         actorType: actor.actorType,
@@ -384,6 +394,8 @@ export function issueTreeControlRoutes(db: Db) {
           mode: hold.mode,
           reason: hold.releaseReason,
           memberCount: hold.members?.length ?? 0,
+          wakeAgents,
+          cancelledWakeupCount: cancelledWakeups.length,
         },
       });
 
