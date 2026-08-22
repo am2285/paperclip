@@ -395,6 +395,29 @@ describe.sequential("issue comment reopen routes", () => {
     });
   });
 
+  it("uses the shared issue update schema for route-only interrupt fields", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("todo"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "Updated title", interrupt: false });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        title: "Updated title",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
   it("treats reopen=true as a no-op when the issue is already open", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

@@ -200,9 +200,11 @@ import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
-const updateIssueRouteSchema = updateIssueSchema.extend({
-  interrupt: z.boolean().optional(),
-});
+// Keep the PATCH body schema from Paperclip shared intact. Extending it with
+// this package's local Zod instance can produce a mixed-Zod object shape in
+// packaged installs where server and shared resolve separate zod copies. The
+// shared schema already includes route-only fields such as `interrupt`.
+const updateIssueRouteSchema = updateIssueSchema;
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
