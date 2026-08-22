@@ -48,6 +48,10 @@ describe("issue validators", () => {
       .toBeUndefined();
   });
 
+  it("keeps route-only interrupt on the shared update schema", () => {
+    expect(updateIssueSchema.parse({ interrupt: true })).toEqual({ interrupt: true });
+  });
+
   it("accepts review policies on create and update while rejecting unknown values", () => {
     expect(createIssueSchema.parse({ title: "Human review", reviewPolicy: "human_only" }).reviewPolicy)
       .toBe("human_only");

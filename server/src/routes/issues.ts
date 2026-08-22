@@ -254,9 +254,11 @@ import {
 } from "../services/cross-issue-influence-limit.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
-const updateIssueRouteSchema = updateIssueSchema.extend({
-  interrupt: z.boolean().optional(),
-});
+// Keep the PATCH body schema from Paperclip shared intact. Extending it with
+// this package's local Zod instance can produce a mixed-Zod object shape in
+// packaged installs where server and shared resolve separate zod copies. The
+// shared schema already includes route-only fields such as `interrupt`.
+const updateIssueRouteSchema = updateIssueSchema;
 
 function prefersMinimalIssueUpdateResponse(req: Request) {
   return (req.get("Prefer") ?? "")
