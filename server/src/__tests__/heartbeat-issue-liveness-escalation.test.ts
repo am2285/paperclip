@@ -438,6 +438,54 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(wakes).toHaveLength(0);
   });
 
+  it("keeps board audit wake suppression after a later no-op done status write", async () => {
+    const { companyId, agentId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const now = Date.now();
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: "board-auditor",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: blockerIssueId,
+        details: {
+          status: "done",
+          wakeSuppressed: true,
+          auditOnly: true,
+          _previous: { status: "blocked" },
+        },
+        createdAt: new Date(now - 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "board-operator",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: blockerIssueId,
+        details: {
+          status: "done",
+        },
+        createdAt: new Date(now - 1_000),
+      },
+    ]);
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakeBackstopChecked).toBe(1);
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeAuditSuppressed).toBe(1);
+
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(0);
+  });
+
   it("allows a later ordinary blocker completion to supersede audit wake suppression", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });

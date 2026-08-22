@@ -91,6 +91,8 @@ export async function isLatestDependencyResolutionWakeSuppressedByBoardAudit(
         eq(activityLog.entityType, "issue"),
         inArray(activityLog.entityId, blockerIssueIds),
         sql`${activityLog.details}->>'status' is not null`,
+        sql`${activityLog.details}->'_previous'->>'status' is not null`,
+        sql`${activityLog.details}->'_previous'->>'status' is distinct from ${activityLog.details}->>'status'`,
       ),
     )
     .orderBy(desc(activityLog.createdAt))
