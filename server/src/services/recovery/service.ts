@@ -5039,6 +5039,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         companyId,
         companyCandidates.map((candidate) => candidate.id),
       );
+      const blockerIssueIds = [...new Set(
+        [...readinessMap.values()].flatMap((readiness) => readiness.blockerIssueIds),
+      )];
+      const blockerCompletionRows = blockerIssueIds.length > 0
+        ? await db
+            .select({ id: issues.id, completedAt: issues.completedAt })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.id, blockerIssueIds)))
+        : [];
+      const blockerCompletedAtById = new Map(
+        blockerCompletionRows.map((row) => [row.id, row.completedAt] as const),
+      );
 
       for (const candidate of companyCandidates) {
         const agentId = candidate.assigneeAgentId;
@@ -5060,11 +5072,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           buildIssueBlockersResolvedWakeIdempotencyKey({
             dependentIssueId: candidate.id,
             resolvedBlockerIssueId: blockerIssueId,
+            resolvedBlockerCompletedAt: blockerCompletedAtById.get(blockerIssueId),
           })
         );
         const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
           dependentIssueId: candidate.id,
           resolvedBlockerIssueId,
+          resolvedBlockerCompletedAt: blockerCompletedAtById.get(resolvedBlockerIssueId),
         });
         const existingWake = await findExistingIssueBlockersResolvedWakeForAnyKey(db, {
           companyId,

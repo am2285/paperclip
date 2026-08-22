@@ -755,6 +755,16 @@ Create an issue-backed recovery action only when a separate issue is the right e
 
 Instance-level issue-graph liveness auto-recovery is disabled by default. When enabled, its lookback window means "dependency paths updated within the last N hours"; older findings remain advisory and are counted as outside the configured lookback instead of creating recovery actions automatically. This is an operator noise control, not the older staleness delay for determining whether a chain is old enough to surface.
 
+### Lifecycle Safety Boundaries
+
+Three lifecycle boundaries apply before automatic recovery or escalation:
+
+- A mutating agent request attributed to a heartbeat run is valid only while that run is `running` and belongs to the authenticated company and agent. Terminal runs retain read access for diagnosis but cannot create issues, update state, or add comments and work products.
+- A dependency-resolution wake is idempotent for one blocker completion generation. Reopening and completing the same blocker creates a new generation and may wake the same dependent again; retries inside one generation remain deduplicated.
+- Releasing a subtree pause without `wakeAgents: true` is a containment operation. Paperclip cancels unclaimed queued wakes for that tree and suppresses automatic assignment, continuation, and dependency recovery until a deliberate user-requested wake occurs after the release. An explicit wake release or later user wake clears that recovery gate.
+
+These are control-plane safety invariants, not workflow policy. Artifact schemas, reviewer pass/fail rules, and business completion remain the responsibility of the integrating application and its agent contracts.
+
 ### Human Escalation
 
 Human escalation is required when the next safe action depends on board judgment, budget/approval policy, or information unavailable to the control plane.

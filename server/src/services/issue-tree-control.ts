@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -35,6 +35,13 @@ export type ActiveIssueTreePauseHoldGate = {
   mode: "pause";
   reason: string | null;
   releasePolicy: IssueTreeHoldReleasePolicy | null;
+};
+export type NoWakeIssueTreePauseReleaseGate = {
+  holdId: string;
+  rootIssueId: string;
+  issueId: string;
+  releasedAt: Date;
+  releaseReason: string | null;
 };
 type ActorInput = {
   actorType: "user" | "agent" | "system";
@@ -619,6 +626,64 @@ export function issueTreeControlService(db: Db) {
     }
 
     return null;
+  }
+
+  async function getNoWakePauseReleaseGate(
+    companyId: string,
+    issueId: string,
+  ): Promise<NoWakeIssueTreePauseReleaseGate | null> {
+    const release = await db
+      .select({
+        holdId: issueTreeHolds.id,
+        rootIssueId: issueTreeHolds.rootIssueId,
+        releasedAt: issueTreeHolds.releasedAt,
+        releaseReason: issueTreeHolds.releaseReason,
+        releaseMetadata: issueTreeHolds.releaseMetadata,
+      })
+      .from(issueTreeHoldMembers)
+      .innerJoin(issueTreeHolds, eq(issueTreeHoldMembers.holdId, issueTreeHolds.id))
+      .where(
+        and(
+          eq(issueTreeHoldMembers.companyId, companyId),
+          eq(issueTreeHoldMembers.issueId, issueId),
+          eq(issueTreeHolds.companyId, companyId),
+          eq(issueTreeHolds.status, "released"),
+          eq(issueTreeHolds.mode, "pause"),
+          sql`${issueTreeHolds.releasedAt} is not null`,
+        ),
+      )
+      .orderBy(desc(issueTreeHolds.releasedAt), desc(issueTreeHolds.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!release?.releasedAt) return null;
+    const releaseMetadata = release.releaseMetadata && typeof release.releaseMetadata === "object"
+      ? release.releaseMetadata as Record<string, unknown>
+      : null;
+    if (releaseMetadata?.wakeAgents === true) return null;
+
+
+    const deliberateWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.requestedByActorType, "user"),
+          gt(agentWakeupRequests.createdAt, release.releasedAt),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (deliberateWake) return null;
+
+    return {
+      holdId: release.holdId,
+      rootIssueId: release.rootIssueId,
+      issueId,
+      releasedAt: release.releasedAt,
+      releaseReason: release.releaseReason,
+    };
   }
 
   async function preview(
@@ -1206,6 +1271,7 @@ export function issueTreeControlService(db: Db) {
     getHold,
     listHolds,
     getActivePauseHoldGate,
+    getNoWakePauseReleaseGate,
     releaseHold,
     cancelUnclaimedWakeupsForTree,
   };

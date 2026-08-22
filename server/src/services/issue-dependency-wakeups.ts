@@ -14,12 +14,23 @@ const IDEMPOTENT_DEPENDENCY_WAKE_STATUSES = [
 export function buildIssueBlockersResolvedWakeIdempotencyKey(input: {
   dependentIssueId: string;
   resolvedBlockerIssueId: string;
+  resolvedBlockerCompletedAt?: Date | string | null;
 }) {
-  return [
+  const components = [
     ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
     input.dependentIssueId,
     input.resolvedBlockerIssueId,
-  ].join(":");
+  ];
+  if (input.resolvedBlockerCompletedAt) {
+    const completedAt = input.resolvedBlockerCompletedAt instanceof Date
+      ? input.resolvedBlockerCompletedAt
+      : new Date(input.resolvedBlockerCompletedAt);
+    const completionGeneration = completedAt.getTime();
+    if (Number.isFinite(completionGeneration)) {
+      components.push(String(completionGeneration));
+    }
+  }
+  return components.join(":");
 }
 
 export async function findExistingIssueBlockersResolvedWake(
