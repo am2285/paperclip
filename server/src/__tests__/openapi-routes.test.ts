@@ -187,6 +187,36 @@ describe("openapi routes", () => {
       },
     });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
+    const createWorkProduct = res.body.paths["/api/issues/{id}/work-products"].post;
+    expect(createWorkProduct.description).toContain("type: structured_output");
+    const createWorkProductSchema = JSON.stringify(
+      createWorkProduct.requestBody.content["application/json"].schema,
+    );
+    for (const expected of [
+      "structured_output",
+      "contractVersion",
+      "runKey",
+      "sourceSnapshotHash",
+      "result",
+      "resultHash",
+    ]) {
+      expect(createWorkProductSchema).toContain(`\"${expected}\"`);
+    }
+    const updateWorkProduct = res.body.paths["/api/work-products/{id}"].patch;
+    expect(updateWorkProduct.description).toContain("structured_output metadata");
+    const updateWorkProductSchema = JSON.stringify(
+      updateWorkProduct.requestBody.content["application/json"].schema,
+    );
+    for (const expected of [
+      "structured_output",
+      "contractVersion",
+      "runKey",
+      "sourceSnapshotHash",
+      "result",
+      "resultHash",
+    ]) {
+      expect(updateWorkProductSchema).toContain(`\"${expected}\"`);
+    }
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );

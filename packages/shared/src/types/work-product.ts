@@ -5,7 +5,8 @@ export type IssueWorkProductType =
   | "branch"
   | "commit"
   | "artifact"
-  | "document";
+  | "document"
+  | "structured_output";
 
 export type IssueWorkProductProvider =
   | "paperclip"
@@ -63,4 +64,20 @@ export interface AttachmentArtifactWorkProductMetadata {
   openPath: string;
   downloadPath: string;
   originalFilename?: string | null;
+}
+
+export type StructuredOutputJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | StructuredOutputJsonValue[]
+  | { [key: string]: StructuredOutputJsonValue };
+
+export interface StructuredOutputWorkProductMetadata {
+  contractVersion: string;
+  runKey: string;
+  sourceSnapshotHash: string;
+  result: StructuredOutputJsonValue;
+  resultHash: string;
 }

@@ -225,7 +225,33 @@ type OpenApiPathRegistration = {
   [key: string]: unknown;
 };
 
-const zodTypeName = (schema: z.ZodTypeAny) => schema._def.typeName as string;
+const zodTypeName = (schema: z.ZodTypeAny | undefined) => {
+  const def = schema?._def as Record<string, unknown> | undefined;
+  if (!def) return "";
+  if (typeof def.typeName === "string") return def.typeName;
+  if (typeof def.type !== "string") return "";
+  const zodV4TypeNames: Record<string, string> = {
+    any: "ZodAny",
+    array: "ZodArray",
+    boolean: "ZodBoolean",
+    catch: "ZodCatch",
+    date: "ZodDate",
+    default: "ZodDefault",
+    enum: "ZodEnum",
+    intersection: "ZodIntersection",
+    lazy: "ZodLazy",
+    literal: "ZodLiteral",
+    nullable: "ZodNullable",
+    number: "ZodNumber",
+    object: "ZodObject",
+    optional: "ZodOptional",
+    record: "ZodRecord",
+    string: "ZodString",
+    union: "ZodUnion",
+    unknown: "ZodUnknown",
+  };
+  return zodV4TypeNames[def.type] ?? def.type;
+};
 
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   const typeName = zodTypeName(schema);
@@ -254,33 +280,39 @@ function isOptionalSchema(schema: z.ZodTypeAny): boolean {
 
 function applyStringChecks(jsonSchema: JsonSchema, checks: Array<Record<string, unknown>>) {
   for (const check of checks) {
-    if (check.kind === "min") jsonSchema.minLength = check.value;
-    if (check.kind === "max") jsonSchema.maxLength = check.value;
-    if (check.kind === "email") jsonSchema.format = "email";
-    if (check.kind === "url") jsonSchema.format = "uri";
-    if (check.kind === "uuid") jsonSchema.format = "uuid";
-    if (check.kind === "datetime") jsonSchema.format = "date-time";
-    if (check.kind === "regex" && check.regex instanceof RegExp) {
-      jsonSchema.pattern = check.regex.source;
+    const zodV4Def = (check._zod as { def?: Record<string, unknown> } | undefined)?.def;
+    const checkKind = check.kind ?? zodV4Def?.check;
+    if (checkKind === "min" || checkKind === "min_length") jsonSchema.minLength = check.value ?? zodV4Def?.minimum;
+    if (checkKind === "max" || checkKind === "max_length") jsonSchema.maxLength = check.value ?? zodV4Def?.maximum;
+    if (checkKind === "email" || zodV4Def?.format === "email") jsonSchema.format = "email";
+    if (checkKind === "url" || zodV4Def?.format === "url") jsonSchema.format = "uri";
+    if (checkKind === "uuid" || zodV4Def?.format === "uuid") jsonSchema.format = "uuid";
+    if (checkKind === "datetime" || zodV4Def?.format === "datetime") jsonSchema.format = "date-time";
+    const regex = check.regex ?? zodV4Def?.pattern;
+    if ((checkKind === "regex" || regex instanceof RegExp) && regex instanceof RegExp) {
+      jsonSchema.pattern = regex.source;
     }
   }
 }
 
 function applyNumberChecks(jsonSchema: JsonSchema, checks: Array<Record<string, unknown>>) {
   for (const check of checks) {
-    if (check.kind === "int") jsonSchema.type = "integer";
-    if (check.kind === "min") {
-      jsonSchema.minimum = check.value;
-      if (!check.inclusive) jsonSchema.exclusiveMinimum = true;
+    const zodV4Def = (check._zod as { def?: Record<string, unknown> } | undefined)?.def;
+    const checkKind = check.kind ?? zodV4Def?.check;
+    if (checkKind === "int" || zodV4Def?.format === "safeint") jsonSchema.type = "integer";
+    if (checkKind === "min" || checkKind === "greater_than") {
+      jsonSchema.minimum = check.value ?? zodV4Def?.value;
+      if (check.inclusive === false || zodV4Def?.inclusive === false) jsonSchema.exclusiveMinimum = true;
     }
-    if (check.kind === "max") {
-      jsonSchema.maximum = check.value;
-      if (!check.inclusive) jsonSchema.exclusiveMaximum = true;
+    if (checkKind === "max" || checkKind === "less_than") {
+      jsonSchema.maximum = check.value ?? zodV4Def?.value;
+      if (check.inclusive === false || zodV4Def?.inclusive === false) jsonSchema.exclusiveMaximum = true;
     }
   }
 }
 
-function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
+function zodToOpenApiSchema(schema: z.ZodTypeAny | undefined): JsonSchema {
+  if (!schema) return {};
   const unwrapped = unwrapSchema(schema);
   const typeName = zodTypeName(unwrapped);
 
@@ -301,12 +333,13 @@ function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
   if (typeName === "ZodAny" || typeName === "ZodUnknown") return {};
 
   if (typeName === "ZodLiteral") {
-    const value = unwrapped._def.value;
+    const value = unwrapped._def.value ?? unwrapped._def.values?.[0];
     return { type: typeof value, enum: [value] };
   }
 
   if (typeName === "ZodEnum") {
-    return { type: "string", enum: unwrapped._def.values };
+    const values = unwrapped._def.values ?? Object.values(unwrapped._def.entries ?? {});
+    return { type: "string", enum: values };
   }
 
   if (typeName === "ZodNativeEnum") {
@@ -317,7 +350,7 @@ function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
   }
 
   if (typeName === "ZodArray") {
-    return { type: "array", items: zodToOpenApiSchema(unwrapped._def.type) };
+    return { type: "array", items: zodToOpenApiSchema(unwrapped._def.type ?? unwrapped._def.element) };
   }
 
   if (typeName === "ZodRecord") {
@@ -333,6 +366,10 @@ function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
 
   if (typeName === "ZodUnion") {
     return { oneOf: unwrapped._def.options.map((option: z.ZodTypeAny) => zodToOpenApiSchema(option)) };
+  }
+
+  if (typeName === "ZodLazy") {
+    return {};
   }
 
   if (typeName === "ZodDiscriminatedUnion") {
@@ -353,7 +390,7 @@ function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
   }
 
   if (typeName === "ZodObject") {
-    const shape = unwrapped._def.shape();
+    const shape = typeof unwrapped._def.shape === "function" ? unwrapped._def.shape() : unwrapped._def.shape;
     const properties: Record<string, JsonSchema> = {};
     const required: string[] = [];
     for (const [key, value] of Object.entries(shape)) {
@@ -412,7 +449,7 @@ function normalizeResponses(responses: Record<string, OpenApiResponse> = {}) {
 function parametersFromSchema(schema: z.ZodTypeAny, location: "path" | "query") {
   const objectSchema = unwrapSchema(schema);
   if (zodTypeName(objectSchema) !== "ZodObject") return [];
-  const shape = objectSchema._def.shape();
+  const shape = typeof objectSchema._def.shape === "function" ? objectSchema._def.shape() : objectSchema._def.shape;
   return Object.entries(shape).map(([name, value]) => ({
     name,
     in: location,
@@ -2053,6 +2090,7 @@ registry.registerPath({
   path: "/api/issues/{id}/work-products",
   tags: ["issues"],
   summary: "Create an issue work product",
+  description: "Use `type: structured_output` with `metadata.contractVersion`, `runKey`, `sourceSnapshotHash`, nested JSON `result`, and `resultHash` for primary structured results. `type: artifact` with `provider: paperclip` remains attachment-backed.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueWorkProductSchema),
@@ -2065,6 +2103,7 @@ registry.registerPath({
   path: "/api/work-products/{id}",
   tags: ["issues"],
   summary: "Update a work product",
+  description: "Updates structured_output metadata using the same structured result contract; attachment-backed Paperclip artifacts still require same-issue attachment metadata.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateIssueWorkProductSchema),
