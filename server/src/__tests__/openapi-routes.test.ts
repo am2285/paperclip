@@ -199,6 +199,10 @@ describe("openapi routes", () => {
       "sourceSnapshotHash",
       "result",
       "resultHash",
+      "reviewer",
+      "reviewedResultHash",
+      "reviewedSourceWorkProductId",
+      "sourceWorkProductId",
     ]) {
       expect(createWorkProductSchema).toContain(`\"${expected}\"`);
     }
@@ -214,6 +218,10 @@ describe("openapi routes", () => {
       "sourceSnapshotHash",
       "result",
       "resultHash",
+      "reviewer",
+      "reviewedResultHash",
+      "reviewedSourceWorkProductId",
+      "sourceWorkProductId",
     ]) {
       expect(updateWorkProductSchema).toContain(`\"${expected}\"`);
     }

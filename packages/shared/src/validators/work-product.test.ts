@@ -98,6 +98,60 @@ describe("structuredOutputWorkProductMetadataSchema", () => {
     expect(issueWorkProductTypeSchema.options).toContain("structured_output");
   });
 
+  it("accepts exact reviewer lineage metadata at the structured output root", () => {
+    const sourceWorkProductId = "11111111-1111-4111-8111-111111111111";
+    const metadata = structuredOutputWorkProductMetadataSchema.parse({
+      contractVersion: "crm-outreach-review.v1",
+      runKey: "brand-reviewer:SYSA-2012:attempt-1",
+      sourceSnapshotHash: "sha256:source",
+      result: { verdict: "pass", blockers: [] },
+      resultHash: "sha256:finding",
+      reviewer: "brand_voice_reviewer",
+      reviewedResultHash: "sha256:generator-result",
+      reviewedSourceWorkProductId: sourceWorkProductId,
+      sourceWorkProductId,
+    });
+
+    expect(metadata.reviewer).toBe("brand_voice_reviewer");
+    expect(metadata.reviewedResultHash).toBe("sha256:generator-result");
+    expect(metadata.reviewedSourceWorkProductId).toBe(sourceWorkProductId);
+    expect(metadata.sourceWorkProductId).toBe(sourceWorkProductId);
+  });
+
+  it("rejects partial or conflicting reviewer lineage metadata", () => {
+    const partial = structuredOutputWorkProductMetadataSchema.safeParse({
+      contractVersion: "crm-outreach-review.v1",
+      runKey: "brand-reviewer:SYSA-2012:attempt-1",
+      sourceSnapshotHash: "sha256:source",
+      result: { verdict: "pass", blockers: [] },
+      resultHash: "sha256:finding",
+      reviewer: "brand_voice_reviewer",
+    });
+    expect(partial.success).toBe(false);
+    if (partial.success) throw new Error("Expected incomplete reviewer lineage metadata to fail");
+    expect(partial.error.issues.map((issue) => issue.path.join("."))).toEqual([
+      "reviewedResultHash",
+      "reviewedSourceWorkProductId",
+    ]);
+
+    const conflicting = structuredOutputWorkProductMetadataSchema.safeParse({
+      contractVersion: "crm-outreach-review.v1",
+      runKey: "brand-reviewer:SYSA-2012:attempt-1",
+      sourceSnapshotHash: "sha256:source",
+      result: { verdict: "pass", blockers: [] },
+      resultHash: "sha256:finding",
+      reviewer: "brand_voice_reviewer",
+      reviewedResultHash: "sha256:generator-result",
+      reviewedSourceWorkProductId: "11111111-1111-4111-8111-111111111111",
+      sourceWorkProductId: "22222222-2222-4222-8222-222222222222",
+    });
+    expect(conflicting.success).toBe(false);
+    if (conflicting.success) throw new Error("Expected conflicting reviewer source ids to fail");
+    expect(conflicting.error.issues.map((issue) => issue.path.join("."))).toEqual([
+      "sourceWorkProductId",
+    ]);
+  });
+
   it("rejects incomplete or non-canonical structured output metadata", () => {
     const parsed = structuredOutputWorkProductMetadataSchema.safeParse({
       contractVersion: "crm-outreach-result.v1",

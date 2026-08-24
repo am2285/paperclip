@@ -753,6 +753,10 @@ describe("issue attachment routes", () => {
         ],
       },
       resultHash: "sha256:result-2",
+      reviewer: "brand_voice_reviewer",
+      reviewedResultHash: "sha256:result-1",
+      reviewedSourceWorkProductId: "22222222-2222-4222-8222-222222222222",
+      sourceWorkProductId: "22222222-2222-4222-8222-222222222222",
     };
     let storedProduct: Record<string, unknown> | null = null;
 
