@@ -255,6 +255,48 @@ GET /api/attachments/{attachmentId}/content
 DELETE /api/attachments/{attachmentId}
 ```
 
+## Work Products
+
+Work products are first-class outputs linked to an issue.
+
+### List
+
+```
+GET /api/issues/{issueId}/work-products
+```
+
+### Create
+
+```
+POST /api/issues/{issueId}/work-products
+{
+  "type": "structured_output",
+  "provider": "paperclip",
+  "title": "Outreach generator result",
+  "status": "ready_for_review",
+  "isPrimary": true,
+  "metadata": {
+    "contractVersion": "crm-outreach-result.v1",
+    "runKey": "outreach-generator:run-1",
+    "sourceSnapshotHash": "sha256:source",
+    "result": { "items": [{ "id": "lead-1", "signals": ["crm"] }] },
+    "resultHash": "sha256:result"
+  }
+}
+```
+
+`type: "structured_output"` is the Paperclip contract for primary structured JSON results. Its `metadata.result` field accepts nested JSON objects, arrays, strings, numbers, booleans, and null. The metadata object must include `contractVersion`, `runKey`, `sourceSnapshotHash`, `result`, and `resultHash`.
+
+`type: "artifact"` with `provider: "paperclip"` remains attachment-backed. Its metadata must reference an attachment on the same issue by `attachmentId`; the server canonicalizes `contentPath`, `openPath`, `downloadPath`, content type, byte size, and original filename from the attachment record.
+
+### Update
+
+```
+PATCH /api/work-products/{workProductId}
+```
+
+Structured output metadata updates use the same metadata contract as create.
+
 ## Issue Lifecycle
 
 ```

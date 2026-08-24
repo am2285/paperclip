@@ -13,6 +13,7 @@ export const issueWorkProductTypeSchema = z.enum([
   "commit",
   "artifact",
   "document",
+  "structured_output",
 ]);
 
 export const issueWorkProductStatusSchema = z.enum([
@@ -69,9 +70,41 @@ export const attachmentArtifactWorkProductMetadataSchema = z.object({
 
 export type AttachmentArtifactWorkProductMetadata = z.infer<typeof attachmentArtifactWorkProductMetadataSchema>;
 
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
+  z.string(),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+  z.array(jsonValueSchema),
+  z.record(z.string(), jsonValueSchema),
+]));
+
+export const structuredOutputWorkProductMetadataSchema = z.object({
+  contractVersion: z.string().min(1),
+  runKey: z.string().min(1),
+  sourceSnapshotHash: z.string().min(1),
+  result: jsonValueSchema,
+  resultHash: z.string().min(1),
+}).strict();
+
+export type StructuredOutputWorkProductMetadata = z.infer<typeof structuredOutputWorkProductMetadataSchema>;
+
 export const issueWorkProductMetadataSchema = z
   .object({
     resourceRef: workspaceFileRefSchema.optional().nullable(),
+    contractVersion: z.string().min(1).optional(),
+    runKey: z.string().min(1).optional(),
+    sourceSnapshotHash: z.string().min(1).optional(),
+    result: jsonValueSchema.optional(),
+    resultHash: z.string().min(1).optional(),
   })
   .passthrough();
 

@@ -17,6 +17,7 @@ const mockCompanyService = vi.hoisted(() => ({
 const mockWorkProductService = vi.hoisted(() => ({
   createForIssue: vi.fn(),
   getById: vi.fn(),
+  listForIssue: vi.fn(),
   update: vi.fn(),
 }));
 const mockAccessService = vi.hoisted(() => ({
@@ -259,6 +260,7 @@ describe("issue attachment routes", () => {
     });
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
+    mockWorkProductService.listForIssue.mockReset();
     mockWorkProductService.update.mockReset();
   });
 
@@ -720,6 +722,140 @@ describe("issue attachment routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("Attachment artifact must reference an attachment on the same issue");
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
+  });
+
+  it("round-trips structured output metadata through create, update, and list routes", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+      projectId: null,
+    };
+    const createdMetadata = {
+      contractVersion: "crm-outreach-result.v1",
+      runKey: "outreach-generator:run-1",
+      sourceSnapshotHash: "sha256:source-1",
+      result: {
+        prospects: [{ id: "lead-1", nested: { score: 0.91, tags: ["crm", "outreach"] } }],
+      },
+      resultHash: "sha256:result-1",
+    };
+    const updatedMetadata = {
+      contractVersion: "crm-outreach-result.v1",
+      runKey: "outreach-generator:run-1",
+      sourceSnapshotHash: "sha256:source-2",
+      result: {
+        prospects: [
+          { id: "lead-1", nested: { score: 0.95, tags: ["crm", "outreach", "reviewed"] } },
+          { id: "lead-2", nested: { score: 0.82, tags: [] } },
+        ],
+      },
+      resultHash: "sha256:result-2",
+    };
+    let storedProduct: Record<string, unknown> | null = null;
+
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.createForIssue.mockImplementation(async (_issueId, companyId, input) => {
+      storedProduct = {
+        id: "structured-product-1",
+        issueId: issue.id,
+        companyId,
+        ...input,
+      };
+      return storedProduct;
+    });
+    mockWorkProductService.getById.mockImplementation(async () => storedProduct);
+    mockWorkProductService.update.mockImplementation(async (_id, patch) => {
+      storedProduct = { ...storedProduct, ...patch };
+      return storedProduct;
+    });
+    mockWorkProductService.listForIssue.mockImplementation(async () => storedProduct ? [storedProduct] : []);
+
+    const app = await createApp(storage);
+    const createRes = await request(app)
+      .post(`/api/issues/${issue.id}/work-products`)
+      .send({
+        type: "structured_output",
+        provider: "paperclip",
+        title: "Outreach generator result",
+        status: "ready_for_review",
+        isPrimary: true,
+        metadata: createdMetadata,
+      });
+
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    expect(createRes.body.metadata).toEqual(createdMetadata);
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issue.id,
+      issue.companyId,
+      expect.objectContaining({
+        type: "structured_output",
+        provider: "paperclip",
+        status: "ready_for_review",
+        isPrimary: true,
+        metadata: createdMetadata,
+      }),
+    );
+
+    const updateRes = await request(app)
+      .patch("/api/work-products/structured-product-1")
+      .send({
+        status: "ready_for_review",
+        isPrimary: true,
+        metadata: updatedMetadata,
+      });
+
+    expect(updateRes.status, JSON.stringify(updateRes.body)).toBe(200);
+    expect(updateRes.body.metadata).toEqual(updatedMetadata);
+    expect(mockWorkProductService.update).toHaveBeenCalledWith(
+      "structured-product-1",
+      expect.objectContaining({
+        status: "ready_for_review",
+        isPrimary: true,
+        metadata: updatedMetadata,
+      }),
+    );
+
+    const listRes = await request(app).get(`/api/issues/${issue.id}/work-products`);
+
+    expect(listRes.status, JSON.stringify(listRes.body)).toBe(200);
+    expect(listRes.body).toEqual([
+      expect.objectContaining({
+        id: "structured-product-1",
+        type: "structured_output",
+        status: "ready_for_review",
+        isPrimary: true,
+        metadata: updatedMetadata,
+      }),
+    ]);
+  });
+
+  it("rejects paperclip artifact work products without attachment metadata", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+      projectId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/issues/${issue.id}/work-products`)
+      .send({
+        type: "artifact",
+        provider: "paperclip",
+        title: "Not an arbitrary JSON artifact",
+        metadata: {
+          result: { nested: true },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Invalid attachment artifact metadata");
     expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
   });
 

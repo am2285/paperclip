@@ -38,6 +38,7 @@ import {
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
+  structuredOutputWorkProductMetadataSchema,
   createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
   createDocumentAnnotationCommentSchema,
@@ -398,6 +399,26 @@ function requiresPaperclipAttachmentMetadata(input: {
   const type = typeof input.type === "string" ? input.type : fallback?.type ?? null;
   const provider = typeof input.provider === "string" ? input.provider : fallback?.provider ?? null;
   return type === "artifact" && provider === "paperclip";
+}
+
+function requiresStructuredOutputMetadata(input: {
+  type?: unknown;
+}, fallback?: {
+  type?: string | null;
+}) {
+  const type = typeof input.type === "string" ? input.type : fallback?.type ?? null;
+  return type === "structured_output";
+}
+
+function parseStructuredOutputMetadata(metadata: unknown) {
+  const parsed = structuredOutputWorkProductMetadataSchema.safeParse(metadata);
+  if (!parsed.success) {
+    throw unprocessable("Invalid structured output metadata", {
+      code: "invalid_structured_output_metadata",
+      details: parsed.error.issues,
+    });
+  }
+  return parsed.data;
 }
 
 const attachmentArtifactMetadataInputSchema = z.object({
@@ -6587,6 +6608,8 @@ export function issueRoutes(
         issue,
         metadata: req.body.metadata ?? null,
       });
+    } else if (requiresStructuredOutputMetadata(createInput)) {
+      createInput.metadata = parseStructuredOutputMetadata(req.body.metadata ?? null);
     }
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
     if (!product) {
@@ -6780,6 +6803,13 @@ export function issueRoutes(
         });
       } else if (!requiresPaperclipAttachmentMetadata(existing)) {
         res.status(422).json({ error: "Attachment-backed artifact metadata is required" });
+        return;
+      }
+    } else if (requiresStructuredOutputMetadata(patch, existing)) {
+      if (patch.metadata !== undefined) {
+        patch.metadata = parseStructuredOutputMetadata(patch.metadata ?? null);
+      } else if (!requiresStructuredOutputMetadata(existing)) {
+        res.status(422).json({ error: "Structured output metadata is required" });
         return;
       }
     }

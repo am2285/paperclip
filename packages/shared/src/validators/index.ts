@@ -490,11 +490,13 @@ export {
   issueWorkProductMetadataSchema,
   updateIssueWorkProductSchema,
   attachmentArtifactWorkProductMetadataSchema,
+  structuredOutputWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
   type CreateIssueWorkProduct,
   type IssueWorkProductMetadata,
+  type StructuredOutputWorkProductMetadata,
   type UpdateIssueWorkProduct,
 } from "./work-product.js";
 

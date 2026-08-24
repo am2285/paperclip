@@ -1625,6 +1625,7 @@ export {
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
   issueWorkProductMetadataSchema,
+  structuredOutputWorkProductMetadataSchema,
   updateIssueWorkProductSchema,
   attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
