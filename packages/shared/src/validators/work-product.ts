@@ -93,7 +93,51 @@ export const structuredOutputWorkProductMetadataSchema = z.object({
   sourceSnapshotHash: z.string().min(1),
   result: jsonValueSchema,
   resultHash: z.string().min(1),
-}).strict();
+  reviewer: z.string().min(1).optional(),
+  reviewedResultHash: z.string().min(1).optional(),
+  reviewedSourceWorkProductId: z.string().uuid().optional(),
+  sourceWorkProductId: z.string().uuid().optional(),
+}).strict().superRefine((value, ctx) => {
+  const hasReviewerLineage =
+    value.reviewer !== undefined ||
+    value.reviewedResultHash !== undefined ||
+    value.reviewedSourceWorkProductId !== undefined ||
+    value.sourceWorkProductId !== undefined;
+  if (!hasReviewerLineage) return;
+
+  if (!value.reviewer) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reviewer"],
+      message: "reviewer is required when reviewer lineage metadata is present",
+    });
+  }
+  if (!value.reviewedResultHash) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reviewedResultHash"],
+      message: "reviewedResultHash is required when reviewer lineage metadata is present",
+    });
+  }
+  if (!value.reviewedSourceWorkProductId && !value.sourceWorkProductId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reviewedSourceWorkProductId"],
+      message: "a reviewed source work product id is required when reviewer lineage metadata is present",
+    });
+  }
+  if (
+    value.reviewedSourceWorkProductId &&
+    value.sourceWorkProductId &&
+    value.reviewedSourceWorkProductId !== value.sourceWorkProductId
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["sourceWorkProductId"],
+      message: "sourceWorkProductId must match reviewedSourceWorkProductId when both are present",
+    });
+  }
+});
 
 export type StructuredOutputWorkProductMetadata = z.infer<typeof structuredOutputWorkProductMetadataSchema>;
 
@@ -105,6 +149,10 @@ export const issueWorkProductMetadataSchema = z
     sourceSnapshotHash: z.string().min(1).optional(),
     result: jsonValueSchema.optional(),
     resultHash: z.string().min(1).optional(),
+    reviewer: z.string().min(1).optional(),
+    reviewedResultHash: z.string().min(1).optional(),
+    reviewedSourceWorkProductId: z.string().uuid().optional(),
+    sourceWorkProductId: z.string().uuid().optional(),
   })
   .passthrough();
 
