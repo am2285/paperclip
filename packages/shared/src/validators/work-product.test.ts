@@ -118,6 +118,53 @@ describe("structuredOutputWorkProductMetadataSchema", () => {
     expect(metadata.sourceWorkProductId).toBe(sourceWorkProductId);
   });
 
+  it("accepts exact manager lineage metadata at the structured output root", () => {
+    const metadata = structuredOutputWorkProductMetadataSchema.parse({
+      contractVersion: "crm-outreach-manager-result.v1",
+      runKey: "outreach-manager:SYSA-2043:attempt-1",
+      sourceSnapshotHash: "sha256:source",
+      result: { packages: [{ prospectId: "lead-1", touches: [] }] },
+      resultHash: "sha256:result",
+      instructionHashes: {
+        cso: "sha256:cso-instructions",
+        outreach_generator: "sha256:generator-instructions",
+      },
+      childIssueIds: {
+        outreach_generator: "11111111-1111-4111-8111-111111111111",
+        brand_voice_reviewer: "22222222-2222-4222-8222-222222222222",
+        marketing_claims_reviewer: "33333333-3333-4333-8333-333333333333",
+      },
+      reviewerFindings: [
+        { reviewer: "brand_voice_reviewer", verdict: "pass" },
+        { reviewer: "marketing_claims_reviewer", verdict: "pass" },
+      ],
+    });
+    expect(metadata.instructionHashes?.cso).toBe("sha256:cso-instructions");
+    expect(metadata.childIssueIds?.outreach_generator).toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(metadata.reviewerFindings).toHaveLength(2);
+  });
+
+  it("rejects partial manager lineage metadata", () => {
+    const partial = structuredOutputWorkProductMetadataSchema.safeParse({
+      contractVersion: "crm-outreach-manager-result.v1",
+      runKey: "outreach-manager:SYSA-2043:attempt-1",
+      sourceSnapshotHash: "sha256:source",
+      result: { packages: [] },
+      resultHash: "sha256:result",
+      childIssueIds: {
+        outreach_generator: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    expect(partial.success).toBe(false);
+    if (partial.success) throw new Error("Expected incomplete manager lineage metadata to fail");
+    expect(partial.error.issues.map((issue) => issue.path.join("."))).toEqual([
+      "instructionHashes",
+      "reviewerFindings",
+    ]);
+  });
+
   it("rejects partial or conflicting reviewer lineage metadata", () => {
     const partial = structuredOutputWorkProductMetadataSchema.safeParse({
       contractVersion: "crm-outreach-review.v1",

@@ -757,6 +757,19 @@ describe("issue attachment routes", () => {
       reviewedResultHash: "sha256:result-1",
       reviewedSourceWorkProductId: "22222222-2222-4222-8222-222222222222",
       sourceWorkProductId: "22222222-2222-4222-8222-222222222222",
+      instructionHashes: {
+        cso: "sha256:cso-instructions",
+        outreach_generator: "sha256:generator-instructions",
+      },
+      childIssueIds: {
+        outreach_generator: "11111111-1111-4111-8111-111111111111",
+        brand_voice_reviewer: "22222222-2222-4222-8222-222222222222",
+        marketing_claims_reviewer: "33333333-3333-4333-8333-333333333333",
+      },
+      reviewerFindings: [
+        { reviewer: "brand_voice_reviewer", verdict: "pass" },
+        { reviewer: "marketing_claims_reviewer", verdict: "pass" },
+      ],
     };
     let storedProduct: Record<string, unknown> | null = null;
 
