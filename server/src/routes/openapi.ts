@@ -2090,7 +2090,7 @@ registry.registerPath({
   path: "/api/issues/{id}/work-products",
   tags: ["issues"],
   summary: "Create an issue work product",
-  description: "Use `type: structured_output` with `metadata.contractVersion`, `runKey`, `sourceSnapshotHash`, nested JSON `result`, and `resultHash` for primary structured results. Hash-bound reviewer outputs may also include root `reviewer`, `reviewedResultHash`, and `reviewedSourceWorkProductId`/`sourceWorkProductId` lineage. `type: artifact` with `provider: paperclip` remains attachment-backed.",
+  description: "Use `type: structured_output` with `metadata.contractVersion`, `runKey`, `sourceSnapshotHash`, nested JSON `result`, and `resultHash` for primary structured results. Hash-bound reviewer outputs may also include root `reviewer`, `reviewedResultHash`, and `reviewedSourceWorkProductId`/`sourceWorkProductId` lineage. Manager outputs may include the complete root lineage set `instructionHashes`, `childIssueIds`, and `reviewerFindings`. `type: artifact` with `provider: paperclip` remains attachment-backed.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueWorkProductSchema),
@@ -2103,7 +2103,7 @@ registry.registerPath({
   path: "/api/work-products/{id}",
   tags: ["issues"],
   summary: "Update a work product",
-  description: "Updates structured_output metadata using the same structured result and optional hash-bound reviewer-lineage contract; attachment-backed Paperclip artifacts still require same-issue attachment metadata.",
+  description: "Updates structured_output metadata using the same structured result and optional hash-bound reviewer- or complete manager-lineage contract; attachment-backed Paperclip artifacts still require same-issue attachment metadata.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateIssueWorkProductSchema),

@@ -87,6 +87,15 @@ const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
   z.record(z.string(), jsonValueSchema),
 ]));
 
+const nonEmptyStringRecordSchema = z.record(z.string(), z.string().min(1)).refine(
+  (value) => Object.keys(value).length > 0,
+  "must contain at least one entry",
+);
+const nonEmptyUuidRecordSchema = z.record(z.string(), z.string().uuid()).refine(
+  (value) => Object.keys(value).length > 0,
+  "must contain at least one entry",
+);
+
 export const structuredOutputWorkProductMetadataSchema = z.object({
   contractVersion: z.string().min(1),
   runKey: z.string().min(1),
@@ -97,45 +106,76 @@ export const structuredOutputWorkProductMetadataSchema = z.object({
   reviewedResultHash: z.string().min(1).optional(),
   reviewedSourceWorkProductId: z.string().uuid().optional(),
   sourceWorkProductId: z.string().uuid().optional(),
+  instructionHashes: nonEmptyStringRecordSchema.optional(),
+  childIssueIds: nonEmptyUuidRecordSchema.optional(),
+  reviewerFindings: z.array(jsonValueSchema).min(1).optional(),
 }).strict().superRefine((value, ctx) => {
   const hasReviewerLineage =
     value.reviewer !== undefined ||
     value.reviewedResultHash !== undefined ||
     value.reviewedSourceWorkProductId !== undefined ||
     value.sourceWorkProductId !== undefined;
-  if (!hasReviewerLineage) return;
+  if (hasReviewerLineage) {
+    if (!value.reviewer) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reviewer"],
+        message: "reviewer is required when reviewer lineage metadata is present",
+      });
+    }
+    if (!value.reviewedResultHash) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reviewedResultHash"],
+        message: "reviewedResultHash is required when reviewer lineage metadata is present",
+      });
+    }
+    if (!value.reviewedSourceWorkProductId && !value.sourceWorkProductId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reviewedSourceWorkProductId"],
+        message: "a reviewed source work product id is required when reviewer lineage metadata is present",
+      });
+    }
+    if (
+      value.reviewedSourceWorkProductId &&
+      value.sourceWorkProductId &&
+      value.reviewedSourceWorkProductId !== value.sourceWorkProductId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sourceWorkProductId"],
+        message: "sourceWorkProductId must match reviewedSourceWorkProductId when both are present",
+      });
+    }
+  }
 
-  if (!value.reviewer) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["reviewer"],
-      message: "reviewer is required when reviewer lineage metadata is present",
-    });
-  }
-  if (!value.reviewedResultHash) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["reviewedResultHash"],
-      message: "reviewedResultHash is required when reviewer lineage metadata is present",
-    });
-  }
-  if (!value.reviewedSourceWorkProductId && !value.sourceWorkProductId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["reviewedSourceWorkProductId"],
-      message: "a reviewed source work product id is required when reviewer lineage metadata is present",
-    });
-  }
-  if (
-    value.reviewedSourceWorkProductId &&
-    value.sourceWorkProductId &&
-    value.reviewedSourceWorkProductId !== value.sourceWorkProductId
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["sourceWorkProductId"],
-      message: "sourceWorkProductId must match reviewedSourceWorkProductId when both are present",
-    });
+  const hasManagerLineage =
+    value.instructionHashes !== undefined ||
+    value.childIssueIds !== undefined ||
+    value.reviewerFindings !== undefined;
+  if (hasManagerLineage) {
+    if (!value.instructionHashes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["instructionHashes"],
+        message: "instructionHashes is required when manager lineage metadata is present",
+      });
+    }
+    if (!value.childIssueIds) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["childIssueIds"],
+        message: "childIssueIds is required when manager lineage metadata is present",
+      });
+    }
+    if (!value.reviewerFindings) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reviewerFindings"],
+        message: "reviewerFindings is required when manager lineage metadata is present",
+      });
+    }
   }
 });
 
@@ -153,6 +193,9 @@ export const issueWorkProductMetadataSchema = z
     reviewedResultHash: z.string().min(1).optional(),
     reviewedSourceWorkProductId: z.string().uuid().optional(),
     sourceWorkProductId: z.string().uuid().optional(),
+    instructionHashes: nonEmptyStringRecordSchema.optional(),
+    childIssueIds: nonEmptyUuidRecordSchema.optional(),
+    reviewerFindings: z.array(jsonValueSchema).min(1).optional(),
   })
   .passthrough();
 
