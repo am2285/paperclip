@@ -10,6 +10,13 @@ import {
   recordResponsibleUserDenialOnActiveRun,
 } from "../services/responsible-user-denial-run-outcomes.js";
 
+export interface ValidationFieldError {
+  field: string;
+  path: string[];
+  code: string;
+  message: string;
+}
+
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
   method: string;
@@ -72,6 +79,26 @@ function recordResponsibleUserDenialFromHttpError(
   });
 }
 
+export function formatValidationIssues(issues: unknown): ValidationFieldError[] {
+  if (!Array.isArray(issues)) return [];
+  return issues.flatMap((issue) => {
+    if (!issue || typeof issue !== "object" || Array.isArray(issue)) return [];
+    const candidate = issue as Record<string, unknown>;
+    if (!Array.isArray(candidate.path) || typeof candidate.message !== "string") return [];
+    const path = candidate.path.map(String);
+    return [{
+      field: path.length > 0 ? path.join(".") : "$",
+      path,
+      code: typeof candidate.code === "string" ? candidate.code : "invalid",
+      message: candidate.message,
+    }];
+  });
+}
+
+export function formatZodFieldErrors(err: ZodError): ValidationFieldError[] {
+  return formatValidationIssues(err.errors);
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
@@ -83,6 +110,7 @@ export function errorHandler(
       ? err.details as Record<string, unknown>
       : null;
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
+    const fieldErrors = formatValidationIssues(details?.details);
     const structuredConnectionError = new Set([
       "user_authorization_required",
       "grant_revoked",
@@ -112,13 +140,19 @@ export function errorHandler(
       ...(structuredConnectionError && details?.connection ? { connection: details.connection } : {}),
       ...(structuredConnectionError && details?.subject ? { subject: details.subject } : {}),
       ...(structuredConnectionError && typeof details?.grantId === "string" ? { grantId: details.grantId } : {}),
+      ...(fieldErrors.length > 0 ? { fieldErrors } : {}),
       ...(!redactedSkillPolicyDenial && err.details ? { details: err.details } : {}),
     });
     return;
   }
 
   if (err instanceof ZodError) {
-    res.status(400).json({ error: "Validation error", details: err.errors });
+    res.status(400).json({
+      error: "Validation error",
+      code: "request_validation_failed",
+      fieldErrors: formatZodFieldErrors(err),
+      details: err.errors,
+    });
     return;
   }
 
